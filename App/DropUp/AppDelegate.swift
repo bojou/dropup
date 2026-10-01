@@ -1,14 +1,16 @@
 import AppKit
 import SwiftUI
+import UserNotifications
 
 @MainActor
-final class AppDelegate: NSObject, NSApplicationDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDelegate {
     private let model = AppModel()
     private lazy var windows = WindowCoordinator(model: model)
     private var statusItem: StatusItemController?
     private var dropPanel: DropPanelController?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        UNUserNotificationCenter.current().delegate = self
         let statusItem = StatusItemController(model: model, onOpenSettings: { [weak self] in self?.windows.showSettings() })
         self.statusItem = statusItem
         let dropPanel = DropPanelController(model: model, statusItem: statusItem)
@@ -19,5 +21,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if model.needsOnboarding {
             windows.showOnboarding()
         }
+    }
+
+    // An accessory app is never "frontmost", but still show the banner if it happens to be.
+    nonisolated func userNotificationCenter(
+        _ center: UNUserNotificationCenter,
+        willPresent notification: UNNotification
+    ) async -> UNNotificationPresentationOptions {
+        [.banner]
     }
 }
