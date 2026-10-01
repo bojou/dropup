@@ -1,0 +1,38 @@
+name: DropUp
+options:
+  bundleIdPrefix: app.dropup
+  deploymentTarget:
+    macOS: "14.0"
+packages:
+  DropUpCore:
+    path: DropUpCore
+targets:
+  DropUp:
+    type: application
+    platform: macOS
+    sources:
+      - App/DropUp
+    dependencies:
+      - package: DropUpCore
+        product: DropUpCore
+      - package: DropUpCore
+        product: DropUpTransport
+    info:
+      path: App/DropUp/Info.plist
+      properties:
+        CFBundleDisplayName: DropUp
+        CFBundleShortVersionString: "$(MARKETING_VERSION)"
+        CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
+        LSUIElement: true # menubar only, no Dock icon
+        LSApplicationCategoryType: public.app-category.utilities
+        NSHumanReadableCopyright: ""
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: app.dropup.DropUp
+        # The app layer is thin UI glue; the strictly checked code lives in DropUpCore.
+        SWIFT_VERSION: "5.0"
+        MARKETING_VERSION: "0.1.0"
+        CURRENT_PROJECT_VERSION: "1"
+        ENABLE_HARDENED_RUNTIME: YES
+        CODE_SIGN_IDENTITY: "-"
+        GENERATE_INFOPLIST_FILE: NO
