@@ -86,7 +86,13 @@ final class NetworkByteStream: ByteStream, @unchecked Sendable {
                     if let content, !content.isEmpty {
                         continuation.resume(returning: content)
                     } else if let error {
-                        continuation.resume(throwing: UploaderError.connectionFailed(Self.describe(error)))
+                        if case .posix(let code) = error, code == .ENODATA {
+                            // Network.framework sometimes reports the peer's clean close as
+                            // "No message available on STREAM" instead of a completed receive.
+                            continuation.resume(returning: Data())
+                        } else {
+                            continuation.resume(throwing: UploaderError.connectionFailed(Self.describe(error)))
+                        }
                     } else {
                         // No data and no error: the peer finished sending (isComplete).
                         _ = isComplete
