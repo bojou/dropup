@@ -10,5 +10,20 @@ jobs:
     runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
+
+      - name: Start test FTP and SFTP servers
+        run: |
+          python3 -m venv "$RUNNER_TEMP/venv"
+          "$RUNNER_TEMP/venv/bin/pip" install pyftpdlib asyncssh
+          "$RUNNER_TEMP/venv/bin/python" scripts/test-servers.py > "$RUNNER_TEMP/servers.log" 2>&1 &
+          for _ in $(seq 1 30); do
+            grep -q '^ready' "$RUNNER_TEMP/servers.log" && break
+            sleep 1
+          done
+          cat "$RUNNER_TEMP/servers.log"
+          grep '^export' "$RUNNER_TEMP/servers.log" | sed 's/^export //' >> "$GITHUB_ENV"
+
+      # Unit tests plus the integration tests, which upload to the servers above
+      # using the real Network.framework FTP transport and the real SFTP client.
       - name: Test DropUpCore
         run: swift test --package-path DropUpCore
