@@ -1,0 +1,164 @@
+name: Release
+
+# Builds DropUp.app, signs and notarizes it when the signing secrets exist, packs it into a DMG and
+# publishes a GitHub release. See docs/RELEASING.md for the secrets and how to create them.
+#
+#   • Push a tag like v0.1.0, or
+#   • Run the workflow by hand from the Actions tab and type a version like 0.1.0.
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to release, like 0.1.0 (the tag v0.1.0 is created on the current commit)'
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: macos-15
+    env:
+      # Whether the secrets exist. Secrets can't be tested directly in `if:`, so they are copied into booleans.
+      HAS_CERT: ${{ secrets.MACOS_CERTIFICATE != '' && secrets.MACOS_CERTIFICATE_PASSWORD != '' }}
+      HAS_NOTARY: ${{ secrets.NOTARY_APPLE_ID != '' && secrets.NOTARY_TEAM_ID != '' && secrets.NOTARY_PASSWORD != '' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Work out the version
+        id: version
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            VERSION="${{ github.event.inputs.version }}"
+          else
+            VERSION="${GITHUB_REF_NAME#v}"
+          fi
+          case "$VERSION" in
+            [0-9]*.[0-9]*.[0-9]*) ;;
+            *) echo "::error::Version must look like 1.2.3, got '$VERSION'"; exit 1 ;;
+          esac
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=v$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Generate Xcode project
+        run: |
+          brew install xcodegen
+          xcodegen generate
+
+      - name: Build
+        run: |
+          xcodebuild -project DropUp.xcodeproj -scheme DropUp -configuration Release \
+            -destination 'platform=macOS' -derivedDataPath build \
+            MARKETING_VERSION="${{ steps.version.outputs.version }}" \
+            CURRENT_PROJECT_VERSION="${{ github.run_number }}" \
+            CODE_SIGNING_ALLOWED=NO build
+          cp -R build/Build/Products/Release/DropUp.app DropUp.app
+
+      - name: Import the Developer ID certificate
+        if: env.HAS_CERT == 'true'
+        env:
+          MACOS_CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE }}
+          MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+        run: |
+          KEYCHAIN="$RUNNER_TEMP/signing.keychain-db"
+          KEYCHAIN_PASSWORD="$(uuidgen)"
+          echo "$MACOS_CERTIFICATE" | base64 --decode > "$RUNNER_TEMP/certificate.p12"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security import "$RUNNER_TEMP/certificate.p12" -k "$KEYCHAIN" -P "$MACOS_CERTIFICATE_PASSWORD" \
+            -T /usr/bin/codesign -T /usr/bin/security
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security list-keychains -d user -s "$KEYCHAIN" $(security list-keychains -d user | tr -d '"')
+          rm "$RUNNER_TEMP/certificate.p12"
+          IDENTITY="$(security find-identity -v -p codesigning "$KEYCHAIN" | grep 'Developer ID Application' | head -1 | sed -E 's/.*"(.*)"/\1/')"
+          if [ -z "$IDENTITY" ]; then
+            echo "::error::The certificate has no 'Developer ID Application' identity. Export the Developer ID Application certificate with its private key."
+            exit 1
+          fi
+          echo "SIGNING_IDENTITY=$IDENTITY" >> "$GITHUB_ENV"
+
+      - name: Sign the app
+        run: |
+          if [ "$HAS_CERT" = "true" ]; then
+            codesign --force --options runtime --timestamp --sign "$SIGNING_IDENTITY" DropUp.app
+          else
+            echo "::warning::No signing secrets set. Using an ad-hoc signature, so macOS will warn on first launch."
+            codesign --force --options runtime --sign - DropUp.app
+          fi
+          codesign --verify --strict --verbose=2 DropUp.app
+
+      - name: Notarize and staple the app
+        if: env.HAS_CERT == 'true' && env.HAS_NOTARY == 'true'
+        env:
+          NOTARY_APPLE_ID: ${{ secrets.NOTARY_APPLE_ID }}
+          NOTARY_TEAM_ID: ${{ secrets.NOTARY_TEAM_ID }}
+          NOTARY_PASSWORD: ${{ secrets.NOTARY_PASSWORD }}
+        run: |
+          ditto -c -k --keepParent DropUp.app DropUp-notarize.zip
+          xcrun notarytool submit DropUp-notarize.zip --wait --timeout 30m \
+            --apple-id "$NOTARY_APPLE_ID" --team-id "$NOTARY_TEAM_ID" --password "$NOTARY_PASSWORD"
+          xcrun stapler staple DropUp.app
+          xcrun stapler validate DropUp.app
+          rm DropUp-notarize.zip
+
+      - name: Build the DMG
+        run: |
+          mkdir dmg
+          cp -R DropUp.app dmg/
+          ln -s /Applications dmg/Applications
+          hdiutil create -volname "DropUp" -srcfolder dmg -ov -format UDZO "DropUp-${{ steps.version.outputs.version }}.dmg"
+          rm -rf dmg
+          if [ "$HAS_CERT" = "true" ]; then
+            codesign --force --timestamp --sign "$SIGNING_IDENTITY" "DropUp-${{ steps.version.outputs.version }}.dmg"
+          fi
+
+      - name: Notarize and staple the DMG
+        if: env.HAS_CERT == 'true' && env.HAS_NOTARY == 'true'
+        env:
+          NOTARY_APPLE_ID: ${{ secrets.NOTARY_APPLE_ID }}
+          NOTARY_TEAM_ID: ${{ secrets.NOTARY_TEAM_ID }}
+          NOTARY_PASSWORD: ${{ secrets.NOTARY_PASSWORD }}
+        run: |
+          DMG="DropUp-${{ steps.version.outputs.version }}.dmg"
+          xcrun notarytool submit "$DMG" --wait --timeout 30m \
+            --apple-id "$NOTARY_APPLE_ID" --team-id "$NOTARY_TEAM_ID" --password "$NOTARY_PASSWORD"
+          xcrun stapler staple "$DMG"
+          xcrun stapler validate "$DMG"
+          spctl --assess --type open --context context:primary-signature --verbose=2 "$DMG"
+
+      - name: Describe how this build is signed
+        id: signing
+        run: |
+          if [ "$HAS_CERT" = "true" ] && [ "$HAS_NOTARY" = "true" ]; then
+            echo "note=Signed with Developer ID and notarized by Apple. It opens without any warning." >> "$GITHUB_OUTPUT"
+            echo "prerelease=false" >> "$GITHUB_OUTPUT"
+          elif [ "$HAS_CERT" = "true" ]; then
+            echo "note=Signed with Developer ID but not notarized. On first launch, right-click DropUp and choose Open." >> "$GITHUB_OUTPUT"
+            echo "prerelease=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "note=Not signed (ad-hoc only). On first launch, right-click DropUp and choose Open, then confirm." >> "$GITHUB_OUTPUT"
+            echo "prerelease=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="${{ steps.version.outputs.tag }}"
+          DMG="DropUp-${{ steps.version.outputs.version }}.dmg"
+          PRE="${{ steps.signing.outputs.prerelease }}"
+          NOTES="${{ steps.signing.outputs.note }}
+
+          Open the DMG and drag DropUp into Applications."
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            # Re-running for the same version (for example after adding the signing secrets) replaces the DMG.
+            gh release upload "$TAG" "$DMG" --clobber
+            gh release edit "$TAG" --prerelease="$PRE" --notes "$NOTES"
+          else
+            gh release create "$TAG" "$DMG" --target "$GITHUB_SHA" --title "DropUp ${{ steps.version.outputs.version }}" \
+              --notes "$NOTES" --prerelease="$PRE"
+          fi
