@@ -95,18 +95,10 @@ final class TrustOnFirstUseValidator: NIOSSHClientServerAuthenticationDelegate, 
         if Self.sameKey(trusted, presented) {
             validationCompletePromise.succeed(())
         } else {
-            let fingerprint = Self.fingerprint(of: presented)
+            let fingerprint = HostKeyFingerprint.sha256(openSSHKey: presented) ?? "an unknown key"
             lock.withLock { _rejectedFingerprint = fingerprint }
             validationCompletePromise.fail(UploaderError.hostKeyChanged(fingerprint: fingerprint))
         }
-    }
-
-    /// The `SHA256:…` fingerprint that `ssh-keygen -lf` prints for an OpenSSH public key string.
-    static func fingerprint(of openSSHKey: String) -> String {
-        let fields = openSSHKey.split(separator: " ")
-        guard fields.count >= 2, let blob = Data(base64Encoded: String(fields[1])) else { return "an unknown key" }
-        let digest = Data(SHA256.hash(data: blob)).base64EncodedString()
-        return "SHA256:" + digest.trimmingCharacters(in: CharacterSet(charactersIn: "="))
     }
 
     /// Compares key type and key data, ignoring any trailing comment.
@@ -229,5 +221,15 @@ final class SFTPSession: ServerSession, @unchecked Sendable {
         default:
             return SFTPConnector.map(error)
         }
+    }
+}
+
+public enum HostKeyFingerprint {
+    /// The `SHA256:…` fingerprint that `ssh-keygen -lf` prints for an OpenSSH public key string.
+    public static func sha256(openSSHKey: String) -> String? {
+        let fields = openSSHKey.split(separator: " ")
+        guard fields.count >= 2, let blob = Data(base64Encoded: String(fields[1])) else { return nil }
+        let digest = Data(SHA256.hash(data: blob)).base64EncodedString()
+        return "SHA256:" + digest.trimmingCharacters(in: CharacterSet(charactersIn: "="))
     }
 }
