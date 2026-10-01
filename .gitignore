@@ -1,0 +1,7 @@
+.DS_Store
+/DropUp.xcodeproj/
+.build/
+DerivedData/
+xcuserdata/
+*.xcuserstate
+.swiftpm/
