@@ -1,20 +1,5 @@
 import Foundation
 
-/// One file to send to one server.
-public struct UploadRequest: Sendable, Equatable {
-    public var fileURL: URL
-    public var remotePath: String
-    public var config: ServerConfig
-    public var password: String
-
-    public init(fileURL: URL, remotePath: String, config: ServerConfig, password: String) {
-        self.fileURL = fileURL
-        self.remotePath = remotePath
-        self.config = config
-        self.password = password
-    }
-}
-
 public struct UploadProgress: Sendable, Equatable {
     public var bytesSent: Int64
     public var totalBytes: Int64
@@ -31,33 +16,85 @@ public struct UploadProgress: Sendable, Equatable {
     }
 }
 
-/// Sends a single file to a server. Implementations: `FTPUploader`, `SFTPUploader`, and fakes in tests.
-public protocol Uploader: Sendable {
+/// One logged-in connection to the server. Implementations: `FTPSession`, the SFTP session in
+/// `DropUpTransport`, and fakes in tests.
+///
+/// A session is used by one caller at a time. After any error it should be closed and discarded.
+public protocol ServerSession: Sendable {
+    /// Whether a file (not a folder) exists at `path`.
+    func fileExists(atPath path: String) async throws -> Bool
+
+    /// Names of the folders directly inside `path`, without `.` and `..`.
+    func listDirectories(atPath path: String) async throws -> [String]
+
+    /// Sends the file to `remotePath`, replacing anything already there.
+    /// `progress` receives the total number of bytes sent so far.
+    /// Must stop promptly with `CancellationError` when the task is cancelled.
     func upload(
-        _ request: UploadRequest,
-        progress: @escaping @Sendable (UploadProgress) -> Void
+        fileURL: URL,
+        to remotePath: String,
+        progress: @escaping @Sendable (Int64) -> Void
     ) async throws
+
+    /// Logs out and closes the connection. Never throws.
+    func close() async
 }
 
-/// Picks the uploader for a protocol, so the queue never knows about concrete transports.
-public protocol UploaderFactory: Sendable {
-    func uploader(for transferProtocol: TransferProtocol) -> any Uploader
+/// Opens sessions for one transfer protocol.
+public protocol ServerConnector: Sendable {
+    func connect(to config: ServerConfig, password: String) async throws -> any ServerSession
 }
 
-public struct DefaultUploaderFactory: UploaderFactory {
-    public init() {}
+/// Picks the connector for a protocol, so the queue never knows about concrete transports.
+/// The app uses `StandardConnectorFactory` from `DropUpTransport`.
+public protocol ConnectorFactory: Sendable {
+    func connector(for transferProtocol: TransferProtocol) -> any ServerConnector
+}
 
-    public func uploader(for transferProtocol: TransferProtocol) -> any Uploader {
-        switch transferProtocol {
-        case .ftp: FTPUploader()
-        case .sftp: SFTPUploader()
+public enum UploaderError: Error, Equatable, Sendable {
+    case connectionFailed(String)
+    case authenticationFailed
+    case serverRejected(code: Int, message: String)
+    case timedOut
+    /// The SFTP server presented a different host key than the one trusted earlier.
+    case hostKeyChanged(fingerprint: String)
+    /// The remote path contains characters the protocol cannot carry (such as line breaks).
+    case invalidRemotePath
+}
+
+extension UploaderError: LocalizedError {
+    public var errorDescription: String? {
+        switch self {
+        case .connectionFailed(let reason):
+            "Couldn't connect to the server. \(reason)"
+        case .authenticationFailed:
+            "The server rejected the username or password."
+        case .serverRejected(let code, let message):
+            message.isEmpty ? "The server refused (\(code))." : "The server refused: \(message) (\(code))"
+        case .timedOut:
+            "The server stopped responding."
+        case .hostKeyChanged(let fingerprint):
+            "The server's identity changed (now \(fingerprint)). If you expected this, forget the old key in Settings."
+        case .invalidRemotePath:
+            "The file or folder name can't be used on the server."
         }
     }
 }
 
-public enum UploaderError: Error, Equatable, Sendable {
-    case notImplemented(TransferProtocol)
-    case connectionFailed(String)
-    case authenticationFailed
-    case serverRejected(code: Int, message: String)
+/// Runs `operation`, throwing `UploaderError.timedOut` if it takes longer than `seconds`.
+/// The operation is cancelled on timeout, so it must respond to cancellation.
+public func withTimeout<T: Sendable>(
+    seconds: Double,
+    _ operation: @escaping @Sendable () async throws -> T
+) async throws -> T {
+    try await withThrowingTaskGroup(of: T.self) { group in
+        group.addTask { try await operation() }
+        group.addTask {
+            try await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
+            throw UploaderError.timedOut
+        }
+        defer { group.cancelAll() }
+        guard let result = try await group.next() else { throw UploaderError.timedOut }
+        return result
+    }
 }

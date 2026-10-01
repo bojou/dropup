@@ -55,10 +55,17 @@ Only the password is secret. It is stored in the Keychain as a generic password,
 - `UploadQueue.waitUntilIdle()` and `finish()` let a test enqueue files, wait, and then read the complete event list deterministically.
 - The FTP parsers are pure value types, so protocol edge cases (multi-line replies, split packets, malformed PASV/EPSV) are tested without a socket.
 
-## Next: the real transfers
+## Transfers
 
-**FTP.** Implement `FTPUploader` on Network.framework (`NWConnection`): connect, read the `220` greeting via `FTPReplyParser`, `USER`/`PASS`, `TYPE I`, `EPSV` with `PASV` fallback, open the data connection, `STOR <remotePath>`, stream the file in chunks while calling `progress`, close the data connection, expect `226`. Put the control-channel I/O behind a small transport protocol so the command sequence can be tested against a scripted fake server.
+`DropUpCore` talks to servers through three small protocols: `ServerConnector` opens a logged-in `ServerSession`; a session can check whether a file exists, list folders, and upload a file with byte progress and cancellation. The upload queue keeps one session open while files are waiting and closes it when the queue runs dry.
 
-**SFTP.** Use [Citadel](https://github.com/orlandos-nl/Citadel) (pure Swift, on SwiftNIO SSH) for password auth and SFTP writes with progress. Shelling out to `/usr/bin/sftp` is not viable: it cannot take a password non-interactively and gives no byte-level progress. Host-key verification needs a decision: trust on first use with the fingerprint shown during onboarding is the likely default.
+**FTP** (`FTPSession`, in `DropUpCore`). The command sequence is plain Swift over a `ByteStream`, so it is unit tested against a scripted fake server. It logs in, asks for UTF-8 and binary mode, then uses EPSV (falling back to PASV) and always connects the data channel to the control connection's host, because servers behind NAT advertise addresses clients can't reach. `STOR` streams the file in 256 KB chunks and treats the `226` reply as success. Existence checks use SIZE then MDTM; folder listings use MLSD then LIST. Commands containing line breaks are refused so a file name can't inject FTP commands. The real byte stream is `NetworkByteStream` (Network.framework) in `DropUpTransport`.
 
-**Integration tests.** A CI job with Docker-based FTP and SFTP servers can exercise both uploaders end to end. These stay separate from the fast unit tests.
+**SFTP** (`DropUpTransport`). Uses [Citadel](https://github.com/orlandos-nl/Citadel), pinned to an exact version, with password authentication. Several 32 KB writes are kept in flight so uploads are fast on high-latency links. Host keys are trusted on first use: the first key a server presents is remembered per `host:port`, and a different key later fails with a message showing the new fingerprint instead of connecting.
+
+**Name conflicts.** `ConflictPolicy.keepBoth` (default) asks the server whether the name is taken and uploads as `name-1.ext`, `name-2.ext`, … `replace` overwrites.
+
+## Testing the transports
+
+- Unit tests use `FakeSession`, `FakeConnector` and a scripted `FakeFTPServer`.
+- Integration tests (`DropUpIntegrationTests`) upload real files to a real FTP server (pyftpdlib) and a real SFTP server (asyncssh) started by `scripts/test-servers.py`. CI runs them on macOS, so the Network.framework stream is exercised too. They are skipped when the servers aren't running.
