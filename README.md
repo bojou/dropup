@@ -4,14 +4,31 @@ A tiny macOS menubar app. Drop a file on the DropUp icon and it uploads straight
 
 It is a pared-down take on the upload action in Dropzone 4: one destination, no shelf, no extras.
 
+## Install
+
+1. Download `DropUp-<version>.dmg` from the [Releases page](../../releases).
+2. Open the DMG and drag **DropUp** into **Applications**.
+3. Start DropUp from Applications. It lives in the menubar (no Dock icon) and walks you through setting up your server the first time.
+
+Releases are signed with a Developer ID and notarized by Apple, so macOS opens them without a warning. A release marked
+*pre-release* was built without the signing secrets: right-click DropUp and choose **Open** the first time. How releases
+are built, and the secrets the maintainer adds to make them notarized, is in [docs/RELEASING.md](docs/RELEASING.md).
+
+To have DropUp start when you log in, turn on **Open at login** in Settings → General.
+
+## Using it
+
+- Drag a file toward the menubar icon. A drop panel opens under it; drop the file there (or straight on the icon).
+- The icon shows progress while uploading, a brief check when done, and a red dot if something failed.
+- Click the icon for the list of uploads: progress, speed, cancel, retry and recent uploads.
+- Server, credentials and upload folder are set in onboarding and editable in Settings → Connection. Passwords live in the macOS Keychain.
+
 ## Status
 
-Early skeleton. The UI is being designed as a mockup first, so the app target is not in the repo yet. What exists today:
-
-- `DropUpCore`, a Swift package with all the logic: server config and validation, settings store, Keychain credential store, the upload queue with progress events, and an FTP reply/passive-mode parser.
-- Unit tests for the core package.
-
-FTP (passive mode, EPSV with PASV fallback) and SFTP (password auth, trust-on-first-use host keys) transfers work and are tested against real servers. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+Working end to end, still young. The core (FTP and SFTP transfers, upload queue, settings) is tested against real servers
+on Linux and macOS CI. The app itself (menubar icon, drop panel, popover, onboarding, Settings) is compiled by CI on every
+pull request but has had little hands-on use on a real Mac yet, so expect rough edges. See
+[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for how it is put together.
 
 ## v1 scope
 
@@ -25,7 +42,7 @@ Out of scope for v1: copying the uploaded file's URL, FTPS, multiple destination
 ## Requirements
 
 - macOS 14 or later
-- Xcode 16 or later
+- To build from source: Xcode 16 or later and [XcodeGen](https://github.com/yonaskolb/XcodeGen) (`brew install xcodegen && xcodegen generate`, then open `DropUp.xcodeproj`)
 
 ## Tests
 
@@ -53,6 +70,8 @@ DropUpCore/          Swift package
   Sources/DropUpCore       models, stores, upload queue, FTP protocol (no dependencies)
   Sources/DropUpTransport  Network.framework FTP sockets and the Citadel SFTP client
   Tests/                   Unit tests (fakes) and integration tests (real servers)
+App/DropUp/          The menubar app (SwiftUI + AppKit glue; project.yml generates the Xcode project)
 scripts/test-servers.py  Throwaway FTP and SFTP servers for the integration tests
 docs/ARCHITECTURE.md How the pieces fit and why
+docs/RELEASING.md    Building signed, notarized releases
 ```
