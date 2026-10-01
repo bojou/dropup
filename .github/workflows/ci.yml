@@ -27,3 +27,14 @@ jobs:
       # using the real Network.framework FTP transport and the real SFTP client.
       - name: Test DropUpCore
         run: swift test --package-path DropUpCore
+
+  app-build:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Generate Xcode project
+        run: |
+          brew install xcodegen
+          xcodegen generate
+      - name: Build app
+        run: xcodebuild -project DropUp.xcodeproj -scheme DropUp -destination 'platform=macOS' CODE_SIGNING_ALLOWED=NO build
