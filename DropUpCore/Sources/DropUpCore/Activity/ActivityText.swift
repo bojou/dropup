@@ -34,4 +34,32 @@ public enum ActivityText {
         if failed > 0 { parts.append("\(failed) failed") }
         return parts.joined(separator: " · ")
     }
+
+    /// What to tell the user when a batch finishes, or nil when there is nothing to say (everything was cancelled).
+    public static func completionNotice(_ activity: UploadActivity) -> (title: String, body: String)? {
+        var uploaded: [UploadActivity.Item] = []
+        var failed: [UploadActivity.Item] = []
+        for item in activity.batchItems {
+            switch item.state {
+            case .succeeded: uploaded.append(item)
+            case .failed: failed.append(item)
+            default: break
+            }
+        }
+        switch (uploaded.count, failed.count) {
+        case (0, 0):
+            return nil
+        case (1, 0):
+            return ("Uploaded", uploaded[0].fileName)
+        case (let count, 0):
+            return ("Uploaded \(count) files", uploaded.prefix(3).map(\.fileName).joined(separator: ", ") + (count > 3 ? "…" : ""))
+        case (0, 1):
+            if case .failed(let message) = failed[0].state { return ("Upload failed", "\(failed[0].fileName): \(message)") }
+            return nil
+        case (0, let count):
+            return ("\(count) uploads failed", failed.prefix(3).map(\.fileName).joined(separator: ", "))
+        case (let ok, let bad):
+            return ("\(ok) uploaded, \(bad) failed", failed.prefix(3).map(\.fileName).joined(separator: ", "))
+        }
+    }
 }

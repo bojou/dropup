@@ -20,6 +20,9 @@ final class AppModel {
     /// Ticks while uploads run and shortly after, so time-based text and the success flash update.
     private(set) var now = Date()
     private(set) var config: ServerConfig?
+    private(set) var preferences: Preferences
+    /// Bumped when a stored host key changes, so views showing it refresh.
+    private(set) var hostKeyRevision = 0
 
     var panelState: DropPanelState = .hidden
     /// A file is being dragged over the menubar icon itself.
@@ -47,6 +50,7 @@ final class AppModel {
         self.browser = ServerBrowser(connectors: connectors)
         self.queue = UploadQueue(settings: settings, credentials: credentials, connectors: connectors)
         self.config = settings.loadServerConfig()
+        self.preferences = settings.loadPreferences()
 
         Task { @MainActor [weak self, events = queue.events] in
             for await event in events {
@@ -130,14 +134,34 @@ final class AppModel {
         self.config = config
     }
 
+    func updatePreferences(_ change: (inout Preferences) -> Void) {
+        var updated = preferences
+        change(&updated)
+        preferences = updated
+        try? settings.savePreferences(updated)
+    }
+
+    /// The remembered SFTP server identity for `config`, as a fingerprint, or nil if none is stored.
+    func hostKeyFingerprint(for config: ServerConfig) -> String? {
+        _ = hostKeyRevision
+        guard config.transferProtocol == .sftp, let key = hostKeys.trustedKey(for: config.hostKeyID) else { return nil }
+        return HostKeyFingerprint.sha256(openSSHKey: key)
+    }
+
+    func forgetHostKey(for config: ServerConfig) {
+        hostKeys.forget(hostID: config.hostKeyID)
+        hostKeyRevision += 1
+    }
+
     // MARK: Events
 
     private func handle(_ event: UploadEvent) {
+        let wasBusy = activity.isBusy
         now = Date()
         activity.apply(event, now: now)
         switch event {
         case .succeeded, .failed, .cancelled:
-            activity.trim(toRecent: settings.loadPreferences().recentLimit)
+            activity.trim(toRecent: preferences.recentLimit)
             forgetUnusedSources()
             refreshClock(after: 2.1)
         default:
@@ -148,6 +172,16 @@ final class AppModel {
         }
         if isPopoverShown { activity.markFailuresSeen() }
         if activity.isBusy { startTicker() } else { stopTicker() }
+        if wasBusy, !activity.isBusy { batchFinished() }
+    }
+
+    /// Plays the sound and posts the notification, if wanted and if the user isn't already looking at the popover.
+    private func batchFinished() {
+        guard let notice = ActivityText.completionNotice(activity) else { return }
+        if preferences.playSound { NSSound(named: "Glass")?.play() }
+        if preferences.notifyWhenDone, !isPopoverShown {
+            Notifier.post(title: notice.title, body: notice.body)
+        }
     }
 
     private func forgetUnusedSources() {

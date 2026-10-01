@@ -67,6 +67,7 @@ public struct UploadActivity: Equatable, Sendable {
     public var active: [Item] { items.filter { !$0.state.isFinished } }
     public var finished: [Item] { items.filter { $0.state.isFinished } }
     /// Files dropped since the queue was last idle, and how many of them have finished.
+    public var batchItems: [Item] { items.filter { batchIDs.contains($0.id) } }
     public var batchTotal: Int { items.filter { batchIDs.contains($0.id) }.count }
     public var batchDone: Int { items.filter { batchIDs.contains($0.id) && $0.state.isFinished }.count }
     public var isBusy: Bool { items.contains { !$0.state.isFinished } }
