@@ -1,4 +1,7 @@
 import Foundation
+#if canImport(CoreGraphics)
+import CoreGraphics
+#endif
 
 /// Where the large drop panel appears and when it should. Pure geometry in AppKit screen coordinates
 /// (origin bottom-left), so it can be tested without a display.
