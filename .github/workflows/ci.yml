@@ -28,6 +28,9 @@ jobs:
       - name: Test DropUpCore
         run: swift test --package-path DropUpCore
 
+      - name: Test the release scripts
+        run: python3 -m unittest discover -s scripts -p 'test_*.py'
+
   app-build:
     runs-on: macos-15
     steps:
@@ -37,4 +40,47 @@ jobs:
           brew install xcodegen
           xcodegen generate
       - name: Build app
-        run: xcodebuild -project DropUp.xcodeproj -scheme DropUp -destination 'platform=macOS' CODE_SIGNING_ALLOWED=NO build
+        run: xcodebuild -project DropUp.xcodeproj -scheme DropUp -destination 'platform=macOS' -derivedDataPath build CODE_SIGNING_ALLOWED=NO build
+
+      # An app without Sparkle inside could never update itself.
+      - name: Check Sparkle is in the app
+        run: test -d build/Build/Products/Debug/DropUp.app/Contents/Frameworks/Sparkle.framework
+
+      - name: Check the app starts
+        run: |
+          build/Build/Products/Debug/DropUp.app/Contents/MacOS/DropUp > launch.log 2>&1 &
+          PID=$!
+          sleep 6
+          if ! kill -0 "$PID" 2>/dev/null; then
+            echo "::error::The app quit within 6 seconds of starting."
+            cat launch.log
+            exit 1
+          fi
+          kill "$PID" || true
+
+      # The same signing and appcast steps a release runs, with a throwaway key made here, so a change to them
+      # fails in a pull request and not in the middle of a release.
+      - name: Dry run the update signing
+        run: |
+          set -euo pipefail
+          brew list openssl@3 > /dev/null 2>&1 || brew install openssl@3
+          BIN="build/SourcePackages/artifacts/sparkle/Sparkle/bin"
+          "$BIN/generate_keys" > /dev/null
+          PUBLIC_KEY="$("$BIN/generate_keys" -p)"
+          "$BIN/generate_keys" -x "$RUNNER_TEMP/dry-run-key"
+          export SPARKLE_PRIVATE_KEY="$(cat "$RUNNER_TEMP/dry-run-key")"
+          rm "$RUNNER_TEMP/dry-run-key"
+          head -c 100000 /dev/urandom > "$RUNNER_TEMP/test.dmg"
+          SIGNED="$(scripts/sparkle-sign.sh "$BIN/sign_update" "$PUBLIC_KEY" "$RUNNER_TEMP/test.dmg")"
+          read -r SIGNATURE LENGTH <<< "$SIGNED"
+          python3 scripts/make-appcast.py --version 9.9.9 --build 99 --url https://example.com/test.dmg \
+            --signature "$SIGNATURE" --length "$LENGTH" --output "$RUNNER_TEMP/appcast.xml"
+          xmllint --noout "$RUNNER_TEMP/appcast.xml"
+          # A public key that doesn't belong to the private key has to be refused.
+          OTHER_KEY="$(head -c 32 /dev/urandom | base64)"
+          if scripts/sparkle-sign.sh "$BIN/sign_update" "$OTHER_KEY" "$RUNNER_TEMP/test.dmg" > /dev/null 2>&1; then
+            echo "::error::A signature was accepted for the wrong public key."
+            exit 1
+          fi
+          echo "Signing, the check against the public key and the appcast all work."
+

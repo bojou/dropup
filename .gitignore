@@ -6,3 +6,4 @@ xcuserdata/
 *.xcuserstate
 .swiftpm/
 App/DropUp/Info.plist
+__pycache__/

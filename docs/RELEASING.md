@@ -64,6 +64,54 @@ In the workflow run, the *Notarize and staple the DMG* step ends with `accepted`
 If notarization is rejected, run `xcrun notarytool log <submission-id> --apple-id … --team-id … --password …` on your
 Mac to see why; the submission id is in the workflow log.
 
+## Automatic updates
+
+Installed copies of DropUp check for new versions with [Sparkle](https://sparkle-project.org) (Settings → General →
+Updates). The Release workflow publishes what they read: next to the DMG, each release has an `appcast.xml`, and the app
+looks at `https://github.com/bojou/dropup/releases/latest/download/appcast.xml`, so the newest release is always the one
+offered. Sparkle installs an update only if the DMG carries a signature that matches the public key built into the app.
+The signing key is separate from the Developer ID certificate, and it is made once.
+
+| Where | What it is |
+| --- | --- |
+| `SPARKLE_PRIVATE_KEY` (repository secret) | The private half of the update signing key |
+| `SUPublicEDKey` (in `info.properties` in `project.yml`) | The public half. It is public, so it is committed |
+
+Without the secret the workflow still works. It prints a warning and publishes the release without an `appcast.xml`, and
+installed copies are not offered that release. A release made with the secret but without the public key in the app fails,
+so the two can't drift apart unnoticed.
+
+### Making the key
+
+1. In Terminal (use the Sparkle version in `project.yml`, so the tool and the framework in the app match):
+
+   ```sh
+   cd /tmp && curl -fsSL -o sparkle.tar.xz https://github.com/sparkle-project/Sparkle/releases/download/2.10.0/Sparkle-2.10.0.tar.xz
+   mkdir -p sparkle && tar -xf sparkle.tar.xz -C sparkle && sparkle/bin/generate_keys
+   sparkle/bin/generate_keys -x key.txt && pbcopy < key.txt && rm key.txt
+   ```
+
+   `generate_keys` stores the key in your login Keychain and prints the public key (it looks like `KU6D…=`).
+   `generate_keys -p` prints it again later.
+2. Paste the clipboard into a new repository secret named `SPARKLE_PRIVATE_KEY`, then clear the clipboard with
+   `pbcopy < /dev/null`. Never paste the private key anywhere else.
+3. Put the public key in `info.properties` in `project.yml` as `SUPublicEDKey`.
+
+Keep the key in your Keychain backed up. If it is lost, installed copies can't verify anything new, and everyone has to
+install a build with a new public key by hand.
+
+### How an update reaches a Mac
+
+The workflow signs and notarizes the DMG first, then signs that final DMG for Sparkle (the private key only passes
+through that one step, and the signature is checked against the public key inside the app before it is published) and
+writes `appcast.xml` with the version, the download link, the signature and the commit titles since the previous
+release. Installed copies look once a day, or when someone clicks **Check Now**, and ask before installing. An update that
+is ready waits for running uploads and downloads to finish before DropUp restarts.
+
+The first release that contains Sparkle has to be installed by hand like any other DMG. The release after it is the
+first one an installed copy can pick up: install the first one, wait for the next release, then choose
+**Check Now** in Settings → General.
+
 ## Installing a release
 
 Download `DropUp-<version>.dmg` from the Releases page, open it, and drag **DropUp** into **Applications**. Ejecting the

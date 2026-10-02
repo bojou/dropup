@@ -1,7 +1,8 @@
 name: Release
 
 # Builds DropUp.app, signs and notarizes it when the signing secrets exist, packs it into a DMG and
-# publishes a GitHub release. See docs/RELEASING.md for the secrets and how to create them.
+# publishes a GitHub release. With the SPARKLE_PRIVATE_KEY secret it also signs the DMG for in-app updates and
+# attaches the appcast that installed copies read. See docs/RELEASING.md for the secrets and how to create them.
 #
 #   • Push a tag like v0.1.0, or
 #   • Run the workflow by hand from the Actions tab and type a version like 0.1.0.
@@ -25,8 +26,11 @@ jobs:
       # Whether the secrets exist. Secrets can't be tested directly in `if:`, so they are copied into booleans.
       HAS_CERT: ${{ secrets.MACOS_CERTIFICATE != '' && secrets.MACOS_CERTIFICATE_PASSWORD != '' }}
       HAS_NOTARY: ${{ secrets.NOTARY_APPLE_ID != '' && secrets.NOTARY_TEAM_ID != '' && secrets.NOTARY_PASSWORD != '' }}
+      HAS_SPARKLE: ${{ secrets.SPARKLE_PRIVATE_KEY != '' }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # the whole history and the tags, to list what changed since the last release
 
       - name: Work out the version
         id: version
@@ -86,15 +90,48 @@ jobs:
           if [ -n "$NAME" ] && [ "$NAME" != "$IDENTITY" ]; then echo "::add-mask::$NAME"; fi
           echo "SIGNING_IDENTITY=$IDENTITY" >> "$GITHUB_ENV"
 
+      # The app carries Sparkle.framework. Everything inside it is signed first and the app last, each with the same
+      # identity, because macOS refuses to load a framework signed by someone else into a hardened app (and
+      # notarization rejects code that isn't signed with a timestamp).
       - name: Sign the app
         run: |
           if [ "$HAS_CERT" = "true" ]; then
-            codesign --force --options runtime --timestamp --sign "$SIGNING_IDENTITY" DropUp.app
+            IDENTITY="$SIGNING_IDENTITY"
+            STAMP="--timestamp"
           else
             echo "::warning::No signing secrets set. Using an ad-hoc signature, so macOS will warn on first launch."
-            codesign --force --options runtime --sign - DropUp.app
+            IDENTITY="-"
+            STAMP=""
           fi
-          codesign --verify --strict --verbose=2 DropUp.app
+          sign() { codesign --force --options runtime $STAMP --sign "$IDENTITY" "$@"; }
+          FRAMEWORK="DropUp.app/Contents/Frameworks/Sparkle.framework"
+          if [ ! -d "$FRAMEWORK" ]; then
+            echo "::error::Sparkle.framework is not inside the app, so it could never update itself."
+            exit 1
+          fi
+          for ITEM in "$FRAMEWORK"/Versions/B/XPCServices/*.xpc "$FRAMEWORK/Versions/B/Autoupdate" "$FRAMEWORK/Versions/B/Updater.app"; do
+            if [ ! -e "$ITEM" ]; then
+              echo "::error::Expected $ITEM in Sparkle.framework. Its layout changed, so the signing order here needs a look."
+              exit 1
+            fi
+            sign "$ITEM"
+          done
+          sign "$FRAMEWORK"
+          sign DropUp.app
+          codesign --verify --deep --strict --verbose=2 DropUp.app
+
+      # Catches a build that is signed but won't start, before it is notarized and published.
+      - name: Check the signed app starts
+        run: |
+          DropUp.app/Contents/MacOS/DropUp > launch.log 2>&1 &
+          PID=$!
+          sleep 6
+          if ! kill -0 "$PID" 2>/dev/null; then
+            echo "::error::The signed app quit within 6 seconds of starting."
+            cat launch.log
+            exit 1
+          fi
+          kill "$PID" || true
 
       - name: Notarize and staple the app
         if: env.HAS_CERT == 'true' && env.HAS_NOTARY == 'true'
@@ -135,6 +172,46 @@ jobs:
           xcrun stapler validate "$DMG"
           spctl --assess --type open --context context:primary-signature --verbose=2 "$DMG"
 
+      - name: Warn that this release has no update feed
+        if: env.HAS_SPARKLE != 'true'
+        run: echo "::warning::SPARKLE_PRIVATE_KEY is not set, so this release has no appcast and installed copies of DropUp will not be offered it. See docs/RELEASING.md."
+
+      # Sparkle checks the DMG's signature on the Mac before it installs an update, so the DMG is signed in its final
+      # form, after notarization and stapling changed it. The private key only passes through the environment of this
+      # step. scripts/sparkle-sign.sh also checks the signature against the public key inside the app.
+      - name: Sign the update and write the appcast
+        if: env.HAS_SPARKLE == 'true'
+        env:
+          SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          echo "::add-mask::$SPARKLE_PRIVATE_KEY"
+          brew list openssl@3 > /dev/null 2>&1 || brew install openssl@3
+          VERSION="${{ steps.version.outputs.version }}"
+          TAG="${{ steps.version.outputs.tag }}"
+          DMG="DropUp-$VERSION.dmg"
+          PLIST="DropUp.app/Contents/Info.plist"
+          if ! PUBLIC_KEY="$(/usr/libexec/PlistBuddy -c 'Print :SUPublicEDKey' "$PLIST" 2> /dev/null)" || [ -z "$PUBLIC_KEY" ]; then
+            echo "::error::The app has no SUPublicEDKey. Add the public key to project.yml (see docs/RELEASING.md)."
+            exit 1
+          fi
+          BUILD="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$PLIST")"
+          SIGN_UPDATE="build/SourcePackages/artifacts/sparkle/Sparkle/bin/sign_update"
+          SIGNED="$(scripts/sparkle-sign.sh "$SIGN_UPDATE" "$PUBLIC_KEY" "$DMG")"
+          read -r SIGNATURE LENGTH <<< "$SIGNED"
+
+          # What changed: the title of each commit since the previous release, without the pull request number.
+          PREVIOUS="$(git tag --list 'v*' --sort=-v:refname | grep -vx "$TAG" | head -1 || true)"
+          RANGE="HEAD"
+          if [ -n "$PREVIOUS" ]; then RANGE="$PREVIOUS..HEAD"; fi
+          git log --no-merges --format=%s -n 15 "$RANGE" | sed -E 's/ \(#[0-9]+\)$//' > release-notes.txt
+
+          python3 scripts/make-appcast.py --version "$VERSION" --build "$BUILD" \
+            --url "https://github.com/$GITHUB_REPOSITORY/releases/download/$TAG/$DMG" \
+            --signature "$SIGNATURE" --length "$LENGTH" --notes release-notes.txt --output appcast.xml
+          xmllint --noout appcast.xml
+          echo "Appcast for $VERSION (build $BUILD), signed and checked against the public key in the app."
+
       - name: Describe how this build is signed
         id: signing
         run: |
@@ -159,11 +236,13 @@ jobs:
           NOTES="${{ steps.signing.outputs.note }}
 
           Open the DMG and drag DropUp into Applications."
+          ASSETS=("$DMG")
+          if [ -f appcast.xml ]; then ASSETS+=(appcast.xml); fi
           if gh release view "$TAG" >/dev/null 2>&1; then
-            # Re-running for the same version (for example after adding the signing secrets) replaces the DMG.
-            gh release upload "$TAG" "$DMG" --clobber
+            # Re-running for the same version (for example after adding the signing secrets) replaces the files.
+            gh release upload "$TAG" "${ASSETS[@]}" --clobber
             gh release edit "$TAG" --prerelease="$PRE" --notes "$NOTES"
           else
-            gh release create "$TAG" "$DMG" --target "$GITHUB_SHA" --title "DropUp ${{ steps.version.outputs.version }}" \
+            gh release create "$TAG" "${ASSETS[@]}" --target "$GITHUB_SHA" --title "DropUp ${{ steps.version.outputs.version }}" \
               --notes "$NOTES" --prerelease="$PRE"
           fi
