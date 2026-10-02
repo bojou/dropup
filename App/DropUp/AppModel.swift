@@ -276,15 +276,20 @@ final class AppModel {
     /// Plays the sound and posts the notification, if wanted and if the user isn't already looking at the popover.
     private func batchFinished() {
         guard let notice = ActivityText.completionNotice(activity, hidingNames: preferences.hideRecentNames) else { return }
-        if preferences.playSound { NSSound(named: "Glass")?.play() }
+        if preferences.playSound { Self.playFinishSound(failed: activity.batchHadFailure) }
         if preferences.notifyWhenDone, !isPopoverShown {
             Notifier.post(title: notice.title, body: notice.body)
         }
     }
 
+    /// One sound when everything went through and another, lower one when something failed.
+    private static func playFinishSound(failed: Bool) {
+        NSSound(named: failed ? "Basso" : "Glass")?.play()
+    }
+
     /// Plays the sound and posts the notification for finished downloads, unless the user is looking at the app already.
     private func downloadsFinished(done: [DownloadModel.Item], failed: [DownloadModel.Item]) {
-        if preferences.playSound { NSSound(named: "Glass")?.play() }
+        if preferences.playSound { Self.playFinishSound(failed: !failed.isEmpty) }
         guard preferences.notifyWhenDone, !NSApp.isActive else { return }
         let names = (done + failed).prefix(3).map(\.fileName).joined(separator: ", ")
         switch (done.count, failed.count) {

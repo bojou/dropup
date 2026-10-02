@@ -43,6 +43,25 @@ public enum ActivityText {
         return thing.capitalized
     }
 
+    /// The failure message to show under an upload. With names hidden, the file's name is taken out of it, as is any
+    /// numbered name the server may have been given (`photo-1.png` for `photo.png`).
+    public static func failureMessage(_ message: String, for item: UploadActivity.Item, hidingNames: Bool) -> String {
+        guard hidingNames else { return message }
+        let name = item.isFolder ? String(item.fileName.dropLast()) : item.fileName
+        guard !name.isEmpty else { return message }
+        let (stem, ext) = RemoteFileName.split(name)
+        // Whole words only, so a short name like "a" doesn't cut into the words around it.
+        let pattern = #"(?<![\p{L}\p{N}_])"# + NSRegularExpression.escapedPattern(for: stem) + "(-[0-9]+)?"
+            + NSRegularExpression.escapedPattern(for: ext) + #"(?![\p{L}\p{N}_])"#
+        guard let expression = try? NSRegularExpression(pattern: pattern) else { return message }
+        let range = NSRange(message.startIndex..., in: message)
+        return expression.stringByReplacingMatches(
+            in: message,
+            range: range,
+            withTemplate: NSRegularExpression.escapedTemplate(for: item.isFolder ? "the folder" : "the file")
+        )
+    }
+
     /// What to tell the user when a batch finishes, or nil when there is nothing to say (everything was cancelled).
     /// With `hidingNames` the notice says how many went through, but not what they were called.
     public static func completionNotice(_ activity: UploadActivity, hidingNames: Bool = false) -> (title: String, body: String)? {
@@ -67,7 +86,7 @@ public enum ActivityText {
             return ("Uploaded \(count) files", names(uploaded, more: count > 3))
         case (0, 1):
             if case .failed(let message) = failed[0].state {
-                return ("Upload failed", hidingNames ? message : "\(failed[0].fileName): \(message)")
+                return ("Upload failed", hidingNames ? failureMessage(message, for: failed[0], hidingNames: true) : "\(failed[0].fileName): \(message)")
             }
             return nil
         case (0, let count):
