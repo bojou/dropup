@@ -21,8 +21,7 @@ targets:
         product: DropUpCore
       - package: DropUpCore
         product: DropUpTransport
-      - package: Sparkle
-        embed: true
+      - package: Sparkle # Xcode puts Sparkle.framework into the app by itself; `embed: true` breaks the build
     info:
       path: App/DropUp/Info.plist
       properties:
