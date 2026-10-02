@@ -346,12 +346,14 @@ struct RealServerTests {
 
     // MARK: Changing files and folders
 
-    /// A fresh folder inside `/drops` that the test owns, created on the server's disk and removed afterwards.
+    /// A fresh folder that the test owns, created on the server's disk and removed afterwards.
+    /// It lives under `/ops`, not `/drops`: other tests list `/drops` while these run, and a server that finds an
+    /// entry gone halfway through a listing (asyncssh does) fails the whole listing.
     private func scratchFolder() throws -> (name: String, path: String, disk: String) {
         let name = "ops-\(UUID().uuidString.prefix(8))"
-        let disk = Self.root! + "/drops/" + name
+        let disk = Self.root! + "/ops/" + name
         try FileManager.default.createDirectory(atPath: disk, withIntermediateDirectories: true)
-        return (name, "/drops/" + name, disk)
+        return (name, "/ops/" + name, disk)
     }
 
     private func write(_ text: String, to path: String) throws {
@@ -374,16 +376,16 @@ struct RealServerTests {
 
         let note = try #require(listing.first { $0.name == "note.txt" })
         try await browse.rename(note, to: "renamed note.txt", in: scratch.path)
-        #expect(serverFile("/drops/\(scratch.name)/renamed note.txt") == Data("hello".utf8))
-        #expect(serverFile("/drops/\(scratch.name)/note.txt") == nil)
+        #expect(serverFile("/ops/\(scratch.name)/renamed note.txt") == Data("hello".utf8))
+        #expect(serverFile("/ops/\(scratch.name)/note.txt") == nil)
 
         listing = try await browse.entries(atPath: scratch.path)
         let moving = listing.filter { $0.name == "renamed note.txt" || $0.name == "Älbum 1" }
         #expect(moving.count == 2)
         let result = try await browse.move(moving, from: scratch.path, to: scratch.path + "/Neuer Ordner")
         #expect(result == FileOperationResult(completed: 2, failures: []))
-        #expect(serverFile("/drops/\(scratch.name)/Neuer Ordner/renamed note.txt") == Data("hello".utf8))
-        #expect(serverFile("/drops/\(scratch.name)/Neuer Ordner/Älbum 1/inside.txt") == Data("deep".utf8))
+        #expect(serverFile("/ops/\(scratch.name)/Neuer Ordner/renamed note.txt") == Data("hello".utf8))
+        #expect(serverFile("/ops/\(scratch.name)/Neuer Ordner/Älbum 1/inside.txt") == Data("deep".utf8))
         let rest = try await browse.entries(atPath: scratch.path)
         #expect(rest.map(\.name) == ["Neuer Ordner"])
     }
@@ -406,9 +408,9 @@ struct RealServerTests {
         let result = try await browse.move([a], from: scratch.path, to: scratch.path + "/target")
 
         #expect(result.completed == 0 && result.failures.map(\.name) == ["a.txt"])
-        #expect(serverFile("/drops/\(scratch.name)/a.txt") == Data("mine".utf8))
-        #expect(serverFile("/drops/\(scratch.name)/b.txt") == Data("theirs".utf8))
-        #expect(serverFile("/drops/\(scratch.name)/target/a.txt") == Data("elsewhere".utf8))
+        #expect(serverFile("/ops/\(scratch.name)/a.txt") == Data("mine".utf8))
+        #expect(serverFile("/ops/\(scratch.name)/b.txt") == Data("theirs".utf8))
+        #expect(serverFile("/ops/\(scratch.name)/target/a.txt") == Data("elsewhere".utf8))
     }
 
     @Test(.enabled(if: RealServerTests.enabled), arguments: [TransferProtocol.ftp, .sftp])
@@ -431,7 +433,7 @@ struct RealServerTests {
 
         #expect(result == FileOperationResult(completed: 1, failures: []))
         #expect(!FileManager.default.fileExists(atPath: scratch.disk + "/tree"))
-        #expect(serverFile("/drops/\(scratch.name)/keep.txt") == Data("keep".utf8))
+        #expect(serverFile("/ops/\(scratch.name)/keep.txt") == Data("keep".utf8))
         // Files one, two, three and .hidden; folders a, b, c, empty and tree.
         #expect(removed.values.last == 9)
     }
@@ -453,7 +455,7 @@ struct RealServerTests {
 
         #expect(result == FileOperationResult(completed: 1, failures: []))
         #expect(!FileManager.default.fileExists(atPath: scratch.disk + "/doomed"))
-        #expect(serverFile("/drops/\(scratch.name)/outside/precious.txt") == Data("precious".utf8))
+        #expect(serverFile("/ops/\(scratch.name)/outside/precious.txt") == Data("precious".utf8))
     }
 
     @Test(.enabled(if: RealServerTests.enabled), arguments: [TransferProtocol.ftp, .sftp])

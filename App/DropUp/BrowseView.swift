@@ -33,8 +33,22 @@ struct BrowseView: View {
     var body: some View {
         VStack(spacing: 0) {
             toolbar
+                .alert("New Folder", isPresented: $isCreatingFolder) {
+                    TextField("Name", text: $newFolderName)
+                    Button("Create") { browse.makeFolder(named: newFolderName) }
+                    Button("Cancel", role: .cancel) {}
+                } message: {
+                    Text("Create a folder inside \(browse.path).")
+                }
             Divider()
             content
+                .alert("Rename", isPresented: $isRenaming) {
+                    TextField("Name", text: $renameText)
+                    Button("Rename") { if let target = renaming { browse.rename(target, to: renameText) } }
+                    Button("Cancel", role: .cancel) {}
+                } message: {
+                    Text("Enter a new name for “\(renaming?.name ?? "")”.")
+                }
             if !model.downloads.items.isEmpty {
                 Divider()
                 downloadsPanel
@@ -49,6 +63,12 @@ struct BrowseView: View {
             }
             Divider()
             statusBar
+                .alert(Text(deleteTitle), isPresented: $isConfirmingDelete) {
+                    Button("Delete", role: .destructive) { browse.delete(deleting) }
+                    Button("Cancel", role: .cancel) {}
+                } message: {
+                    Text(deleteMessage)
+                }
         }
         .frame(
             minWidth: Self.minimumSize.width, idealWidth: Self.idealSize.width, maxWidth: .infinity,
@@ -65,26 +85,6 @@ struct BrowseView: View {
         .onChange(of: browse.path) { selection = [] }
         .onChange(of: browse.entries) { applySelectionRequest() }
         .onChange(of: sortOrder) { storeSort() }
-        .alert("Rename", isPresented: $isRenaming) {
-            TextField("Name", text: $renameText)
-            Button("Rename") { if let target = renaming { browse.rename(target, to: renameText) } }
-            Button("Cancel", role: .cancel) {}
-        } message: {
-            Text("Enter a new name for “\(renaming?.name ?? "")”.")
-        }
-        .alert("New Folder", isPresented: $isCreatingFolder) {
-            TextField("Name", text: $newFolderName)
-            Button("Create") { browse.makeFolder(named: newFolderName) }
-            Button("Cancel", role: .cancel) {}
-        } message: {
-            Text("Create a folder inside \(browse.path).")
-        }
-        .alert(Text(deleteTitle), isPresented: $isConfirmingDelete) {
-            Button("Delete", role: .destructive) { browse.delete(deleting) }
-            Button("Cancel", role: .cancel) {}
-        } message: {
-            Text(deleteMessage)
-        }
         .sheet(isPresented: $isChoosingDestination) {
             MoveToSheet(
                 browse: browse,
