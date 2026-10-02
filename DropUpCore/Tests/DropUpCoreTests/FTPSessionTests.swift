@@ -148,6 +148,55 @@ struct FTPSessionTests {
         #expect(server.commandLog.contains("LIST /drops"))
     }
 
+    @Test func downloadsAFileInBinaryPassiveMode() async throws {
+        let temp = try TempFiles()
+        defer { temp.remove() }
+        let original = Data((0..<600_000).map { UInt8(truncatingIfNeeded: $0 &* 31) })
+        let server = FakeFTPServer()
+        server.seed("/drops/photo.png", data: original)
+        let reported = Locked<[Int64]>([])
+        let target = temp.directory.appendingPathComponent("photo.png")
+
+        let session = try await connect(server)
+        try await session.download(remotePath: "/drops/photo.png", to: target) { received in reported.mutate { $0.append(received) } }
+        await session.close()
+
+        #expect(try Data(contentsOf: target) == original)
+        #expect(server.commandLog == ["USER me", "PASS ***", "OPTS UTF8 ON", "TYPE I", "EPSV", "RETR /drops/photo.png", "QUIT"])
+        #expect(reported.value == [262_144, 524_288, 600_000])
+    }
+
+    @Test func downloadingAMissingFileIsRejectedAndLeavesNothingBehind() async throws {
+        let temp = try TempFiles()
+        defer { temp.remove() }
+        let server = FakeFTPServer()
+        let target = temp.directory.appendingPathComponent("missing.txt")
+
+        let session = try await connect(server)
+        await #expect(throws: UploaderError.serverRejected(code: 550, message: "No such file")) {
+            try await session.download(remotePath: "/drops/missing.txt", to: target) { _ in }
+        }
+        #expect(!FileManager.default.fileExists(atPath: target.path))
+    }
+
+    @Test func downloadStopsWhenCancelled() async throws {
+        let temp = try TempFiles()
+        defer { temp.remove() }
+        let server = FakeFTPServer()
+        server.seed("/drops/big.bin", data: Data(count: 2_000_000))
+        let target = temp.directory.appendingPathComponent("big.bin")
+        let session = try await connect(server)
+
+        let task = Task {
+            try await session.download(remotePath: "/drops/big.bin", to: target) { _ in
+                withUnsafeCurrentTask { $0?.cancel() }
+            }
+        }
+        await #expect(throws: CancellationError.self) { try await task.value }
+        let written = (try? Data(contentsOf: target).count) ?? 0
+        #expect(written < 2_000_000)
+    }
+
     @Test func missingFolderIsRejected() async throws {
         let server = FakeFTPServer()
         let session = try await connect(server)
@@ -166,6 +215,9 @@ struct FTPSessionTests {
         }
         await #expect(throws: UploaderError.invalidRemotePath) {
             try await session.deleteFile(atPath: "/drops/a\r\nDELE x")
+        }
+        await #expect(throws: UploaderError.invalidRemotePath) {
+            try await session.download(remotePath: "/drops/a\r\nDELE x", to: temp.directory.appendingPathComponent("x")) { _ in }
         }
         #expect(!server.commandLog.contains { $0.hasPrefix("DELE") })
     }

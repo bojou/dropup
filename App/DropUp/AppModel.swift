@@ -37,6 +37,8 @@ final class AppModel {
     @ObservationIgnored let hostKeys: any HostKeyStore
     @ObservationIgnored let browser: ServerBrowser
     @ObservationIgnored private let connectors: any ConnectorFactory
+    /// Downloads started from the Browse window.
+    @ObservationIgnored let downloads: DownloadModel
     @ObservationIgnored private let queue: UploadQueue
     @ObservationIgnored private var sourceURLs: [UUID: URL] = [:]
     /// Files dropped into the Browse window go to the folder it showed; a retry sends them there again.
@@ -55,6 +57,7 @@ final class AppModel {
         self.hostKeys = hostKeys
         let connectors = StandardConnectorFactory(hostKeys: hostKeys)
         self.connectors = connectors
+        self.downloads = DownloadModel(connectors: connectors)
         self.browser = ServerBrowser(connectors: connectors)
         self.queue = UploadQueue(settings: settings, credentials: credentials, connectors: connectors)
         self.config = settings.loadServerConfig()
@@ -64,6 +67,9 @@ final class AppModel {
             for await event in events {
                 self?.handle(event)
             }
+        }
+        downloads.onRunFinished = { [weak self] done, failed in
+            self?.downloadsFinished(done: done, failed: failed)
         }
     }
 
@@ -131,8 +137,9 @@ final class AppModel {
     /// The model behind a Browse window for the saved server, or nil before setup. It starts in the upload folder.
     func makeBrowseModel() -> BrowseModel? {
         guard let config else { return nil }
-        let session = BrowseSession(connectors: connectors, config: config, password: password(for: config))
-        return BrowseModel(config: config, session: session)
+        let password = password(for: config)
+        let session = BrowseSession(connectors: connectors, config: config, password: password)
+        return BrowseModel(config: config, password: password, session: session)
     }
 
     // MARK: Settings
@@ -209,6 +216,27 @@ final class AppModel {
         if preferences.playSound { NSSound(named: "Glass")?.play() }
         if preferences.notifyWhenDone, !isPopoverShown {
             Notifier.post(title: notice.title, body: notice.body)
+        }
+    }
+
+    /// Plays the sound and posts the notification for finished downloads, unless the user is looking at the app already.
+    private func downloadsFinished(done: [DownloadModel.Item], failed: [DownloadModel.Item]) {
+        if preferences.playSound { NSSound(named: "Glass")?.play() }
+        guard preferences.notifyWhenDone, !NSApp.isActive else { return }
+        let names = (done + failed).prefix(3).map(\.fileName).joined(separator: ", ")
+        switch (done.count, failed.count) {
+        case (1, 0):
+            Notifier.post(title: "Downloaded", body: done[0].fileName)
+        case (let count, 0):
+            Notifier.post(title: "Downloaded \(count) files", body: names + (count > 3 ? "…" : ""))
+        case (0, 1):
+            if case .failed(let message) = failed[0].state {
+                Notifier.post(title: "Download failed", body: "\(failed[0].fileName): \(message)")
+            }
+        case (0, let count):
+            Notifier.post(title: "\(count) downloads failed", body: names)
+        case (let ok, let bad):
+            Notifier.post(title: "\(ok) downloaded, \(bad) failed", body: failed.prefix(3).map(\.fileName).joined(separator: ", "))
         }
     }
 

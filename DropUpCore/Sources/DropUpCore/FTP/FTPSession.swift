@@ -179,6 +179,43 @@ public actor FTPSession: ServerSession {
         guard done.isPositiveCompletion else { throw Self.rejected(done) }
     }
 
+    public func download(
+        remotePath: String,
+        to fileURL: URL,
+        progress: @escaping @Sendable (Int64) -> Void
+    ) async throws {
+        try Self.validate(remotePath)
+        let data = try await openDataStream()
+        let retr = try await command("RETR \(remotePath)")
+        guard retr.code == 150 || retr.code == 125 else {
+            await data.close()
+            throw Self.rejected(retr)
+        }
+
+        var received: Int64 = 0
+        do {
+            guard FileManager.default.createFile(atPath: fileURL.path, contents: nil) else {
+                throw CocoaError(.fileWriteUnknown, userInfo: [NSFilePathErrorKey: fileURL.path])
+            }
+            let file = try FileHandle(forWritingTo: fileURL)
+            defer { try? file.close() }
+            while true {
+                try Task.checkCancellation()
+                let chunk = try await data.receive(maxLength: Self.chunkSize)
+                if chunk.isEmpty { break }
+                try file.write(contentsOf: chunk)
+                received += Int64(chunk.count)
+                progress(received)
+            }
+        } catch {
+            await data.close()
+            throw error
+        }
+        await data.close()
+        let done = try await readReply(timeout: max(replyTimeout, 120))
+        guard done.isPositiveCompletion else { throw Self.rejected(done) }
+    }
+
     public func deleteFile(atPath remotePath: String) async throws {
         try Self.validate(remotePath)
         let reply = try await command("DELE \(remotePath)")

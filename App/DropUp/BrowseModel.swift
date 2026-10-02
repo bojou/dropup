@@ -11,6 +11,9 @@ final class BrowseModel {
     private(set) var entries: [RemoteEntry] = []
     private(set) var isLoading = false
     private(set) var error: String?
+    /// The server this window shows, and the login for it, kept so downloads go where the window is looking.
+    let config: ServerConfig
+    let password: String
     /// Names the server in the window title and the empty-folder text.
     let serverName: String
     /// Identifies the server this window was opened for, so a drop can tell if Settings pointed somewhere else since.
@@ -19,7 +22,9 @@ final class BrowseModel {
     @ObservationIgnored private let session: BrowseSession
     @ObservationIgnored private var task: Task<Void, Never>?
 
-    init(config: ServerConfig, session: BrowseSession) {
+    init(config: ServerConfig, password: String, session: BrowseSession) {
+        self.config = config
+        self.password = password
         self.path = RemotePath.normalizedDirectory(config.remoteDirectory)
         self.serverName = config.shownName ?? config.host
         self.credentialKey = config.credentialKey
