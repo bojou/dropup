@@ -7,6 +7,8 @@ struct SettingsView: View {
     static let size = CGSize(width: 600, height: 460)
 
     let model: AppModel
+    /// Closes the Settings window.
+    let close: () -> Void
     @State private var tab = Tab.connection
 
     private enum Tab { case connection, general }
@@ -24,11 +26,11 @@ struct SettingsView: View {
             Divider()
             // Both tabs stay alive so unsaved edits on Connection survive a peek at General.
             ZStack {
-                ConnectionSettings(model: model)
+                ConnectionSettings(model: model, close: close)
                     .opacity(tab == .connection ? 1 : 0)
                     .disabled(tab != .connection)
                     .accessibilityHidden(tab != .connection)
-                GeneralSettings(model: model)
+                GeneralSettings(model: model, close: close)
                     .opacity(tab == .general ? 1 : 0)
                     .disabled(tab != .general)
                     .accessibilityHidden(tab != .general)
@@ -40,12 +42,12 @@ struct SettingsView: View {
 
 private struct ConnectionSettings: View {
     let model: AppModel
+    let close: () -> Void
     @State private var draft = ServerDraft()
     @State private var tester = ConnectionTester()
     @State private var folders = FolderBrowserModel()
     @State private var showBrowser = false
     @State private var browsePath = "/"
-    @State private var saved = false
     @State private var saveError: String?
 
     var body: some View {
@@ -120,11 +122,12 @@ private struct ConnectionSettings: View {
 
             Divider()
             HStack {
-                Text(saveError ?? (saved ? "Saved. Changes apply from the next upload." : "Changes apply from the next upload."))
+                Text(saveError ?? "Changes apply from the next upload.")
                     .font(.system(size: 11))
                     .foregroundStyle(saveError == nil ? Color.secondary : Color.red)
                 Spacer()
-                Button("Revert") { load() }
+                Button("Cancel", action: close)
+                    .keyboardShortcut(.cancelAction)
                 Button("Save", action: save)
                     .keyboardShortcut(.defaultAction)
                     .buttonStyle(.borderedProminent)
@@ -133,8 +136,8 @@ private struct ConnectionSettings: View {
             .frame(height: 60)
         }
         .onAppear(perform: load)
-        .onChange(of: draft.config) { tester.reset(); saved = false }
-        .onChange(of: draft.password) { tester.reset(); saved = false }
+        .onChange(of: draft.config) { tester.reset() }
+        .onChange(of: draft.password) { tester.reset() }
         .sheet(isPresented: $showBrowser) {
             VStack(spacing: 12) {
                 Text("Choose a folder").font(.headline)
@@ -179,7 +182,6 @@ private struct ConnectionSettings: View {
             draft = ServerDraft()
         }
         tester.reset()
-        saved = false
         saveError = nil
     }
 
@@ -189,8 +191,7 @@ private struct ConnectionSettings: View {
         do {
             try model.save(draft.config, password: draft.password)
             saveError = nil
-            // `saved` is set after the draft settles, because editing the draft clears it.
-            DispatchQueue.main.async { saved = true }
+            close()
         } catch {
             saveError = "Couldn’t save: \(error.localizedDescription)"
         }
@@ -199,10 +200,29 @@ private struct ConnectionSettings: View {
 
 private struct GeneralSettings: View {
     let model: AppModel
+    let close: () -> Void
     @State private var openAtLogin = LaunchAtLogin.isEnabled
     @State private var loginError: String?
 
     var body: some View {
+        VStack(spacing: 0) {
+            form
+            Divider()
+            HStack {
+                Text("Changes here apply right away.")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Button("Done", action: close)
+                    .keyboardShortcut(.defaultAction)
+                    .buttonStyle(.borderedProminent)
+            }
+            .padding(.horizontal, 22)
+            .frame(height: 60)
+        }
+    }
+
+    private var form: some View {
         Form {
             Section("Startup") {
                 Toggle("Open DropUp at login", isOn: Binding(

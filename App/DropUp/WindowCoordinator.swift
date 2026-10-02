@@ -30,7 +30,8 @@ final class WindowCoordinator: NSObject, NSWindowDelegate {
 
     func showSettings() {
         if settingsWindow == nil {
-            settingsWindow = makeWindow(title: "DropUp Settings", content: SettingsView(model: model))
+            let view = SettingsView(model: model) { [weak self] in self?.settingsWindow?.close() }
+            settingsWindow = makeWindow(title: "DropUp Settings", content: view)
         }
         present(settingsWindow)
     }
@@ -60,6 +61,8 @@ final class WindowCoordinator: NSObject, NSWindowDelegate {
 
     func windowWillClose(_ notification: Notification) {
         guard let closing = notification.object as? NSWindow else { return }
+        // Closing Settings, however it happens, throws away unsaved edits: the next open starts from what is saved.
+        if closing === settingsWindow { settingsWindow = nil }
         let anotherIsOpen = [onboardingWindow, settingsWindow].contains { window in
             guard let window else { return false }
             return window !== closing && window.isVisible
