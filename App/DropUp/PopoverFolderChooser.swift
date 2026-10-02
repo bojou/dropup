@@ -11,7 +11,7 @@ struct PopoverFolderChooser: View {
     @State private var saveError: String?
 
     var body: some View {
-        VStack(spacing: 10) {
+        VStack(spacing: PopoverLayout.spacing + 2) {
             HStack {
                 Text("Upload folder").font(.system(size: 13, weight: .semibold))
                 Spacer()
@@ -52,8 +52,8 @@ struct PopoverFolderChooser: View {
                     .disabled(draft == nil)
             }
         }
-        .padding(10)
-        .frame(width: 336)
+        .padding(PopoverLayout.padding)
+        .frame(width: PopoverLayout.width)
         .onAppear(perform: begin)
         .onDisappear { folders.cancel() }
     }
