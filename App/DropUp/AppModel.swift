@@ -66,17 +66,11 @@ final class AppModel {
     var menubarState: MenubarState { activity.menubarState(now: now) }
     var needsOnboarding: Bool { settings.needsOnboarding }
 
-    /// `SFTP · /var/www/uploads`, or nil before setup.
-    var destinationSummary: String? {
-        guard let config else { return nil }
-        return "\(config.transferProtocol.rawValue.uppercased()) · \(config.remoteDirectory)"
-    }
+    /// `SFTP · /var/www/uploads`, or `My website · /var/www/uploads` with a display name; nil before setup.
+    var destinationSummary: String? { config?.destinationSummary }
 
-    /// `SFTP · files.example.com:/var/www/uploads`
-    var serverSummary: String? {
-        guard let config else { return nil }
-        return "\(config.transferProtocol.rawValue.uppercased()) · \(config.host):\(config.remoteDirectory)"
-    }
+    /// `SFTP · files.example.com:/var/www/uploads`, or `My website · /var/www/uploads` with a display name.
+    var serverSummary: String? { config?.serverSummary }
 
     // MARK: Uploading
 

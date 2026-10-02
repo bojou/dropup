@@ -62,6 +62,41 @@ struct ServerConfigTests {
         #expect(config.remoteDirectory == "/old")
     }
 
+    @Test func summaryShowsTheDisplayNameInsteadOfProtocolAndHost() {
+        var config = ServerConfig(transferProtocol: .sftp, host: "files.example.com", username: "me", remoteDirectory: "/var/www/uploads")
+        #expect(config.serverSummary == "SFTP · files.example.com:/var/www/uploads")
+        #expect(config.destinationSummary == "SFTP · /var/www/uploads")
+        config.displayName = "My website"
+        #expect(config.serverSummary == "My website · /var/www/uploads")
+        #expect(config.destinationSummary == "My website · /var/www/uploads")
+    }
+
+    @Test(arguments: [nil, "", "   ", "\n"])
+    func aBlankDisplayNameCountsAsNone(name: String?) {
+        let config = ServerConfig(transferProtocol: .ftp, host: "h", username: "u", remoteDirectory: "/", displayName: name)
+        #expect(config.shownName == nil)
+        #expect(config.serverSummary == "FTP · h:/")
+    }
+
+    @Test func settingsSavedBeforeDisplayNamesStillLoad() throws {
+        let old = #"{"transferProtocol":"sftp","host":"h","port":22,"username":"u","remoteDirectory":"/drops"}"#
+        let config = try JSONDecoder().decode(ServerConfig.self, from: Data(old.utf8))
+        #expect(config.displayName == nil)
+        #expect(config.remoteDirectory == "/drops")
+    }
+
+    @Test func displayNameSurvivesTheFormAndAFolderChange() {
+        let config = ServerConfig(transferProtocol: .sftp, host: "h", username: "u", remoteDirectory: "/a", displayName: "Blog")
+        var draft = ServerDraft(config: config, password: "pw")
+        #expect(draft.displayName == "Blog")
+        #expect(draft.config == config)
+        draft.displayName = "  Photos  "
+        #expect(draft.config.displayName == "Photos")
+        draft.displayName = "   "
+        #expect(draft.config.displayName == nil)
+        #expect(config.withRemoteDirectory("/b").displayName == "Blog")
+    }
+
     @Test func settingsStoreNeedsOnboardingUntilValidConfigSaved() throws {
         let store = InMemorySettingsStore()
         #expect(store.needsOnboarding)

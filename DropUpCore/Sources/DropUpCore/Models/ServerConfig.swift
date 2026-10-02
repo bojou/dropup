@@ -22,24 +22,47 @@ public struct ServerConfig: Codable, Equatable, Sendable {
     public var username: String
     /// Directory on the server that dropped files are uploaded into, e.g. `/public_html/drops`.
     public var remoteDirectory: String
+    /// An optional name to show instead of the protocol and host, such as `My website`. Settings saved before
+    /// this existed have none.
+    public var displayName: String?
 
     public init(
         transferProtocol: TransferProtocol,
         host: String,
         port: Int? = nil,
         username: String,
-        remoteDirectory: String
+        remoteDirectory: String,
+        displayName: String? = nil
     ) {
         self.transferProtocol = transferProtocol
         self.host = host
         self.port = port ?? transferProtocol.defaultPort
         self.username = username
         self.remoteDirectory = remoteDirectory
+        self.displayName = displayName
     }
 
     /// Stable key used to store and fetch the password for this server.
     public var credentialKey: String {
         "\(transferProtocol.rawValue)://\(username)@\(host):\(port)"
+    }
+
+    /// The display name without surrounding spaces, or nil when there is none worth showing.
+    public var shownName: String? {
+        guard let name = displayName?.trimmingCharacters(in: .whitespacesAndNewlines), !name.isEmpty else { return nil }
+        return name
+    }
+
+    /// The line under "DropUp" in the popover: `My website · /public_html/drops`, or without a display name
+    /// `SFTP · files.example.com:/public_html/drops`.
+    public var serverSummary: String {
+        if let name = shownName { return "\(name) · \(remoteDirectory)" }
+        return "\(transferProtocol.rawValue.uppercased()) · \(host):\(remoteDirectory)"
+    }
+
+    /// The shorter line on the drop panel: `My website · /public_html/drops`, or `SFTP · /public_html/drops`.
+    public var destinationSummary: String {
+        "\(shownName ?? transferProtocol.rawValue.uppercased()) · \(remoteDirectory)"
     }
 
     /// Full remote path for an uploaded file, e.g. `/public_html/drops/photo.png`.
