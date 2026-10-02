@@ -11,8 +11,6 @@ name: Installer flow
 
 on:
   workflow_dispatch:
-  push:
-    branches: [installer-prompt-fix]
 
 jobs:
   build:
