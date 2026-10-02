@@ -149,16 +149,16 @@ struct RealServerTests {
         let names = [uniqueName(), uniqueName("txt"), "Bericht – Größe \(UUID().uuidString.prefix(6)).txt"]
         let contents = [big, Data(), Data("hej".utf8)]
         for (name, data) in zip(names, contents) {
-            try data.write(to: URL(fileURLWithPath: Self.root! + "/drops/\(name)"))
+            try data.write(to: URL(fileURLWithPath: Self.root! + "/ops/\(name)"))
         }
-        defer { for name in names { try? FileManager.default.removeItem(atPath: Self.root! + "/drops/\(name)") } }
+        defer { for name in names { try? FileManager.default.removeItem(atPath: Self.root! + "/ops/\(name)") } }
         let destination = FileManager.default.temporaryDirectory.appendingPathComponent("dl-\(UUID().uuidString.prefix(8))")
         try FileManager.default.createDirectory(at: destination, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: destination) }
 
         let queue = DownloadQueue(connectors: connectors(), progressInterval: 0)
         await queue.enqueue(
-            zip(names, contents).map { RemoteDownload(remotePath: "/drops/\($0)", size: Int64($1.count)) },
+            zip(names, contents).map { RemoteDownload(remotePath: "/ops/\($0)", size: Int64($1.count)) },
             from: config(transferProtocol), password: "secret", into: destination
         )
         await queue.waitUntilIdle()
@@ -199,7 +199,7 @@ struct RealServerTests {
     func cancellingADownloadRemovesThePartialFile(_ transferProtocol: TransferProtocol) async throws {
         // A sparse 512 MB file on the server: too big to finish before the cancel, cheap to create and read.
         let name = uniqueName()
-        let remote = Self.root! + "/drops/\(name)"
+        let remote = Self.root! + "/ops/\(name)"
         #expect(FileManager.default.createFile(atPath: remote, contents: nil))
         let handle = try FileHandle(forWritingTo: URL(fileURLWithPath: remote))
         try handle.truncate(atOffset: 512 * 1024 * 1024)
@@ -210,7 +210,7 @@ struct RealServerTests {
         defer { try? FileManager.default.removeItem(at: destination) }
 
         let queue = DownloadQueue(connectors: connectors(), progressInterval: 0)
-        let ids = await queue.enqueue([RemoteDownload(remotePath: "/drops/\(name)", size: 512 * 1024 * 1024)], from: config(transferProtocol), password: "secret", into: destination)
+        let ids = await queue.enqueue([RemoteDownload(remotePath: "/ops/\(name)", size: 512 * 1024 * 1024)], from: config(transferProtocol), password: "secret", into: destination)
         // Wait until part of the file is on disk, then cancel.
         var partial = 0
         for _ in 0..<2000 where partial == 0 {

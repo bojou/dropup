@@ -5,7 +5,7 @@
     python3 scripts/test-servers.py &      # prints the env vars the tests read, then serves until killed
 
 Both servers accept user "me" with password "secret" and share one root folder with
-`drops/` and `drops/archive/` pre-created. The tests read the same folder to check what arrived.
+`drops/`, `drops/archive/` and `ops/` pre-created. The tests read the same folder to check what arrived.
 """
 import asyncio
 import inspect
@@ -77,6 +77,8 @@ async def start_sftp(root):
 async def main():
     root = tempfile.mkdtemp(prefix="dropup-it-")
     os.makedirs(os.path.join(root, "drops", "archive"))
+    # Tests that create and delete files and folders use ops/, so they never change what a test listing drops/ sees.
+    os.makedirs(os.path.join(root, "ops"))
     start_ftp(root)
     await start_sftp(root)
     print(f"export DROPUP_IT_ROOT={root}", flush=True)
