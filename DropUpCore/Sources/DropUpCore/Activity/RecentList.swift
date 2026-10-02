@@ -27,22 +27,15 @@ public enum RecentClearUnit: String, Codable, CaseIterable, Sendable {
 
 /// The two rules that decide what the Recent list keeps, derived from `Preferences`.
 public struct RecentPolicy: Equatable, Sendable {
-    /// How many finished uploads to keep. Zero keeps none: finished uploads leave the list as soon as the batch is
-    /// done, except failed ones when `keepsFailuresWhenOff`, which stay (up to `failureCap`) until dismissed or until
-    /// `lifetime` passes.
+    /// How many finished uploads to keep. Zero keeps none: every finished upload, failed ones included, leaves the
+    /// list as soon as the batch is done. The menubar icon, the sound and the notification still tell about a failure.
     public var limit: Int
     /// Finished uploads older than this many seconds are removed. Nil never removes them.
     public var lifetime: TimeInterval?
-    /// With the list switched off (`limit` zero): whether failed uploads stay anyway. If not, they leave with the rest.
-    public var keepsFailuresWhenOff: Bool
 
-    /// Most failed uploads the list holds while it is switched off.
-    public static let failureCap = 50
-
-    public init(limit: Int = 10, lifetime: TimeInterval? = nil, keepsFailuresWhenOff: Bool = true) {
+    public init(limit: Int = 10, lifetime: TimeInterval? = nil) {
         self.limit = limit
         self.lifetime = lifetime
-        self.keepsFailuresWhenOff = keepsFailuresWhenOff
     }
 }
 
@@ -113,10 +106,7 @@ extension UploadActivity {
         if policy.limit > 0 {
             trim(toRecent: policy.limit)
         } else {
-            removeFinished { item in
-                if case .failed = item.state, policy.keepsFailuresWhenOff { false } else { true }
-            }
-            trim(toRecent: RecentPolicy.failureCap)
+            removeFinished { _ in true }
         }
         // The icon's failure mark is not touched here: it belongs to the upload that failed, not to the list.
     }

@@ -536,9 +536,8 @@ struct BrowseView: View {
             }
         } else if chosen.isEmpty {
             Button("New Folder") { startNewFolder() }
-            if browse.clipboard != nil {
-                Button("Paste") { browse.paste() }
-            }
+            Button("Paste") { browse.paste() }
+                .disabled(browse.clipboard == nil)
         } else {
             if chosen.count == 1, chosen[0].kind != .file {
                 Button("Open") { activate(ids) }
@@ -577,9 +576,8 @@ struct BrowseView: View {
         .when(canEdit) { empty in
             empty.contextMenu {
                 Button("New Folder") { startNewFolder() }
-                if browse.clipboard != nil {
-                    Button("Paste") { browse.paste() }
-                }
+                Button("Paste") { browse.paste() }
+                    .disabled(browse.clipboard == nil)
             }
         }
     }

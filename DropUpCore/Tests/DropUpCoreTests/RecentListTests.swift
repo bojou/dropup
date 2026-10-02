@@ -31,8 +31,6 @@ struct RecentListTests {
         #expect(preferences.recentPolicy == RecentPolicy(limit: 10, lifetime: nil))
         #expect(!preferences.recentSurvivesQuit)
         #expect(!preferences.hideRecentNames)
-        #expect(!preferences.hideFailedUploads)
-        #expect(preferences.recentPolicy.keepsFailuresWhenOff)
     }
 
     @Test func preferencesFromBeforeTheNewSettingsStillLoad() throws {
@@ -46,14 +44,22 @@ struct RecentListTests {
         #expect(Preferences().recentLimitChoices == [5, 10, 25, 50])
     }
 
+    @Test func theRetiredHideFailedUploadsSettingIsIgnored() throws {
+        // 0.1.23 and 0.1.24 saved this. Off now means off for failed uploads too, so there is nothing to carry over.
+        let old = Data(#"{"recentLimit":0,"hideFailedUploads":false,"hideRecentNames":true}"#.utf8)
+        let decoded = try JSONDecoder().decode(Preferences.self, from: old)
+        #expect(decoded.recentLimit == 0)
+        #expect(decoded.hideRecentNames)
+        #expect(decoded.recentPolicy == RecentPolicy(limit: 0, lifetime: nil))
+    }
+
     @Test func newSettingsRoundTrip() throws {
         let preferences = Preferences(
             recentLimit: 0,
             recentClearMode: .custom,
             recentClearAmount: 30,
             recentClearUnit: .minutes,
-            hideRecentNames: true,
-            hideFailedUploads: true
+            hideRecentNames: true
         )
         let decoded = try JSONDecoder().decode(Preferences.self, from: JSONEncoder().encode(preferences))
         #expect(decoded == preferences)
@@ -137,56 +143,27 @@ struct RecentListTests {
         #expect(activity.menubarState(now: t0.addingTimeInterval(5)) == .idle)
     }
 
-    @Test func withTheListOffOnlyFailuresStay() {
+    @Test func withTheListOffNothingStaysFailedUploadsIncluded() {
         var activity = UploadActivity()
         finish(&activity, "fine", at: t0)
         finish(&activity, "bad", at: t0.addingTimeInterval(1), fails: true)
         finish(&activity, "stopped", at: t0.addingTimeInterval(2), cancels: true)
         activity.applyRecentPolicy(RecentPolicy(limit: 0, lifetime: nil), now: t0.addingTimeInterval(3))
-        #expect(activity.items.map(\.fileName) == ["bad"])
-        // Dismissing it empties the list.
-        activity.clearFinished()
         #expect(activity.items.isEmpty)
     }
 
-    @Test func hidingFailedUploadsToo_removesThemWithTheListOff() {
+    @Test func withTheListOffAFailureIsStillToldByTheIcon() {
         var activity = UploadActivity()
         finish(&activity, "fine", at: t0)
         finish(&activity, "bad", at: t0.addingTimeInterval(1), fails: true)
-        let hiding = Preferences(recentLimit: 0, hideFailedUploads: true).recentPolicy
-        #expect(!hiding.keepsFailuresWhenOff)
-        activity.applyRecentPolicy(hiding, now: t0.addingTimeInterval(2))
+        #expect(activity.batchHadFailure)
+        let policy = Preferences(recentLimit: 0).recentPolicy
+        activity.applyRecentPolicy(policy, now: t0.addingTimeInterval(2))
         #expect(activity.items.isEmpty)
-        // The icon still tells the user, and only opening the popover takes it away.
+        // Not listed, but the cross stays until the popover is opened.
         #expect(activity.menubarState(now: t0.addingTimeInterval(2)) == .failed)
-    }
-
-    @Test func hidingFailedUploadsOnlyMattersWithTheListOff() {
-        var activity = UploadActivity()
-        finish(&activity, "bad", at: t0, fails: true)
-        let policy = Preferences(recentLimit: 10, hideFailedUploads: true).recentPolicy
-        activity.applyRecentPolicy(policy, now: t0.addingTimeInterval(1))
-        #expect(activity.items.map(\.fileName) == ["bad"])
-    }
-
-    @Test func withTheListOffAFailureStillExpiresWithTheClock() {
-        var activity = UploadActivity()
-        finish(&activity, "bad", at: t0, fails: true)
-        let policy = RecentPolicy(limit: 0, lifetime: 3_600)
-        activity.applyRecentPolicy(policy, now: t0.addingTimeInterval(3_599))
-        #expect(activity.items.count == 1)
-        activity.applyRecentPolicy(policy, now: t0.addingTimeInterval(3_600))
-        #expect(activity.items.isEmpty)
-    }
-
-    @Test func withTheListOffFailuresAreCapped() {
-        var activity = UploadActivity()
-        for index in 0..<(RecentPolicy.failureCap + 5) {
-            finish(&activity, "bad\(index)", at: t0.addingTimeInterval(Double(index)), fails: true)
-        }
-        activity.applyRecentPolicy(RecentPolicy(limit: 0, lifetime: nil), now: t0.addingTimeInterval(1_000))
-        #expect(activity.items.count == RecentPolicy.failureCap)
-        #expect(activity.items.first?.fileName == "bad\(RecentPolicy.failureCap + 4)")
+        activity.markFailuresSeen()
+        #expect(activity.menubarState(now: t0.addingTimeInterval(2)) == .idle)
     }
 
     @Test func aBatchInProgressIsLeftAlone() {
@@ -278,7 +255,7 @@ struct RecentListTests {
         let message = "550 Permission denied: /var/www/photo.png (could not write photo-2.png either)"
         #expect(ActivityText.failureMessage(message, for: photo, hidingNames: false) == message)
         #expect(ActivityText.failureMessage(message, for: photo, hidingNames: true)
-            == "550 Permission denied: /var/www/the file (could not write the file either)")
+            == "550 Permission denied: the file (could not write the file either)")
         #expect(ActivityText.failureMessage("Can't open 'photo.png'.", for: photo, hidingNames: true) == "Can't open 'the file'.")
         // Other names and words around it stay.
         #expect(ActivityText.failureMessage("Disk full while sending photo.pngx", for: photo, hidingNames: true)
@@ -292,6 +269,56 @@ struct RecentListTests {
         let short = item("a")
         #expect(ActivityText.failureMessage("Permission denied for a", for: short, hidingNames: true) == "Permission denied for the file")
         #expect(ActivityText.failureMessage("Permission denied", for: short, hidingNames: true) == "Permission denied")
+    }
+
+    @Test func hiddenNamesTakeTheWholeUploadPathOutOfErrorMessages() {
+        func hidden(_ message: String, name: String = "photo.png", paths: [String] = []) -> String {
+            let item = UploadActivity.Item(id: UUID(), fileName: name, totalBytes: 1)
+            return ActivityText.failureMessage(message, for: item, hidingNames: true, hiddenPaths: paths)
+        }
+        // A path goes as one piece, wherever it sits and whatever it is called.
+        #expect(hidden("550 /clients/acme/invoices/photo.png: Permission denied") == "550 the file: Permission denied")
+        #expect(hidden("Couldn't change to /clients/acme/invoices.") == "Couldn't change to the folder.")
+        #expect(hidden("No such directory (/clients/acme/)") == "No such directory (the folder)")
+        #expect(hidden(#"Can't write "/clients/acme/photo.png" now"#) == "Can't write the file now")
+        #expect(hidden("Failed: ~/uploads/2024/x.txt, C:\\Sites\\acme\\x.txt") == "Failed: the folder, the folder")
+        // What a folder upload reports for an item inside the folder.
+        #expect(hidden("“sub/dir/inner.txt”: Permission denied", name: "docs/") == "the folder: Permission denied")
+        #expect(hidden("“inner.txt”: Permission denied", name: "docs/") == "the item: Permission denied")
+        #expect(hidden("“photo.png”: Permission denied") == "the file: Permission denied")
+
+        // Messages with no path in them are left alone.
+        #expect(hidden("The server refused: disk quota exceeded (552)") == "The server refused: disk quota exceeded (552)")
+    }
+
+    @Test func hiddenNamesTakeTheUploadFolderOutEvenWithoutASlash() {
+        func hidden(_ message: String, paths: [String]) -> String {
+            let item = UploadActivity.Item(id: UUID(), fileName: "photo.png", totalBytes: 1)
+            return ActivityText.failureMessage(message, for: item, hidingNames: true, hiddenPaths: paths)
+        }
+        let paths = ["/clients/Acme Corp/invoices/"]
+        // Each folder of the upload path goes wherever it is named, in any case, as whole words.
+        #expect(hidden("Couldn't create invoices", paths: paths) == "Couldn't create the folder")
+        #expect(hidden("No such directory: ACME CORP", paths: paths) == "No such directory: the folder")
+        #expect(hidden("Permission denied for clients", paths: paths) == "Permission denied for the folder")
+        #expect(hidden("Invoicing is closed", paths: paths) == "Invoicing is closed")
+        // A second folder given for the same upload (dropped into Browse) goes too.
+        #expect(hidden("Can't open archive-2019", paths: ["/clients/", "/archive-2019/old"]) == "Can't open the folder")
+        // The root and dots have nothing to hide.
+        #expect(hidden("Permission denied", paths: ["/", "./..", ""]) == "Permission denied")
+    }
+
+    @Test func hiddenPathsLeaveOneStandInPerRun() {
+        let item = UploadActivity.Item(id: UUID(), fileName: "photo.png", totalBytes: 1)
+        let message = "Can't enter Acme Corp Invoices Archive"
+        #expect(ActivityText.failureMessage(message, for: item, hidingNames: true, hiddenPaths: ["/Acme Corp/Invoices/Archive"])
+            == "Can't enter the folder")
+    }
+
+    @Test func showingNamesLeavesErrorMessagesAsTheServerSaidThem() {
+        let item = UploadActivity.Item(id: UUID(), fileName: "photo.png", totalBytes: 1)
+        let message = "550 /clients/acme/photo.png: Permission denied"
+        #expect(ActivityText.failureMessage(message, for: item, hidingNames: false, hiddenPaths: ["/clients/acme"]) == message)
     }
 
     @Test func aBatchWithAFailureIsToldApartFromOneWithout() {
@@ -346,5 +373,16 @@ struct RecentListTests {
         wordy.apply(.queued(id: id, fileName: "taxes.pdf", totalBytes: 1), now: t0)
         wordy.apply(.failed(id: id, .transfer("550 taxes.pdf: permission denied")), now: t0)
         #expect(try #require(ActivityText.completionNotice(wordy, hidingNames: true)).body == "550 the file: permission denied")
+
+        // And so is the upload path, whether the server spells it out or the notice is told where the upload went.
+        var placed = UploadActivity()
+        let target = UUID()
+        placed.apply(.queued(id: target, fileName: "taxes.pdf", totalBytes: 1), now: t0)
+        placed.apply(.failed(id: target, .transfer("550 /clients/acme/taxes.pdf: no space; acme is full")), now: t0)
+        let notice = try #require(ActivityText.completionNotice(placed, hidingNames: true, hiddenPaths: ["/clients/acme"]))
+        #expect(notice.body == "550 the file: no space; the folder is full")
+        // Shown names are not touched.
+        #expect(try #require(ActivityText.completionNotice(placed, hiddenPaths: ["/clients/acme"])).body
+            == "taxes.pdf: 550 /clients/acme/taxes.pdf: no space; acme is full")
     }
 }

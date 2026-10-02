@@ -23,8 +23,6 @@ public struct Preferences: Codable, Equatable, Sendable {
     public var recentClearUnit: RecentClearUnit
     /// Shows "Uploaded file" in the Recent list and in notifications instead of the file's name.
     public var hideRecentNames: Bool
-    /// With the Recent list off: also leave failed uploads out of it. They are kept otherwise, so none goes unseen.
-    public var hideFailedUploads: Bool
 
     public static let recentLimitOptions = [5, 10, 25, 50]
     public static let recentClearAmountRange = 1...999
@@ -37,8 +35,7 @@ public struct Preferences: Codable, Equatable, Sendable {
         recentClearMode: RecentClearMode = .onQuit,
         recentClearAmount: Int = 2,
         recentClearUnit: RecentClearUnit = .hours,
-        hideRecentNames: Bool = false,
-        hideFailedUploads: Bool = false
+        hideRecentNames: Bool = false
     ) {
         self.conflictPolicy = conflictPolicy
         self.notifyWhenDone = notifyWhenDone
@@ -48,7 +45,6 @@ public struct Preferences: Codable, Equatable, Sendable {
         self.recentClearAmount = recentClearAmount
         self.recentClearUnit = recentClearUnit
         self.hideRecentNames = hideRecentNames
-        self.hideFailedUploads = hideFailedUploads
     }
 
     /// The counts the Keep picker offers: the fixed ones, plus the saved count when an earlier version let it be
@@ -70,7 +66,7 @@ public struct Preferences: Codable, Equatable, Sendable {
     }
 
     public var recentPolicy: RecentPolicy {
-        RecentPolicy(limit: max(recentLimit, 0), lifetime: recentLifetime, keepsFailuresWhenOff: !hideFailedUploads)
+        RecentPolicy(limit: max(recentLimit, 0), lifetime: recentLifetime)
     }
 
     /// Whether the Recent list is kept between launches. Anything but "when DropUp quits" asks for that.
@@ -89,7 +85,6 @@ public struct Preferences: Codable, Equatable, Sendable {
         recentClearAmount = (try? container.decode(Int.self, forKey: .recentClearAmount)) ?? defaults.recentClearAmount
         recentClearUnit = (try? container.decode(RecentClearUnit.self, forKey: .recentClearUnit)) ?? defaults.recentClearUnit
         hideRecentNames = (try? container.decode(Bool.self, forKey: .hideRecentNames)) ?? defaults.hideRecentNames
-        hideFailedUploads = (try? container.decode(Bool.self, forKey: .hideFailedUploads)) ?? defaults.hideFailedUploads
     }
 }
 

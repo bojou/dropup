@@ -102,7 +102,10 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
         case .succeeded:
             button.toolTip = "Upload finished"
         case .failed:
-            button.toolTip = "An upload failed. Click to see why."
+            // With the list off there is nothing to open the popover for.
+            button.toolTip = model.preferences.recentLimit > 0
+                ? "An upload failed. Click to see why."
+                : "An upload failed. Recent uploads is off, so it isn’t listed."
         }
     }
 

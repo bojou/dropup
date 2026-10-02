@@ -45,6 +45,8 @@ final class AppModel {
     @ObservationIgnored private var sourceURLs: [UUID: URL] = [:]
     /// Files dropped into the Browse window go to the folder it showed; a retry sends them there again.
     @ObservationIgnored private var destinations: [UUID: String] = [:]
+    /// The folder each listed upload went to, so its error message can still be cleaned after the upload folder changes.
+    @ObservationIgnored private var uploadFolders: [UUID: String] = [:]
     /// Called with the remote path of each file that finishes uploading. The Browse window uses it to refresh.
     @ObservationIgnored var onUploadSucceeded: ((String) -> Void)?
     @ObservationIgnored private var ticker: Task<Void, Never>?
@@ -97,6 +99,12 @@ final class AppModel {
     /// `SFTP · files.example.com:/var/www/uploads`, or `My website · /var/www/uploads` with a display name.
     var serverSummary: String? { config?.serverSummary }
 
+    /// The folders "Hide file names" keeps out of error messages: the upload folder, and every folder the listed
+    /// uploads went to, including the ones a drop in Browse chose.
+    var hiddenPaths: [String] {
+        (config.map { [$0.remoteDirectory] } ?? []) + Array(Set(uploadFolders.values))
+    }
+
     // MARK: Uploading
 
     /// - Parameter directory: a folder on the server to upload into instead of the saved upload folder.
@@ -108,10 +116,12 @@ final class AppModel {
             return
         }
         Task {
+            let folder = directory ?? config?.remoteDirectory
             let ids = await queue.enqueue(files, toDirectory: directory)
             for (id, url) in zip(ids, files) {
                 sourceURLs[id] = url
                 destinations[id] = directory
+                uploadFolders[id] = folder
             }
         }
     }
@@ -135,6 +145,7 @@ final class AppModel {
         activity.remove(id)
         sourceURLs[id] = nil
         destinations[id] = nil
+        uploadFolders[id] = nil
         persistRecent()
         upload([url], toDirectory: directory)
     }
@@ -283,7 +294,7 @@ final class AppModel {
 
     /// Plays the sound and posts the notification, if wanted and if the user isn't already looking at the popover.
     private func batchFinished() {
-        guard let notice = ActivityText.completionNotice(activity, hidingNames: preferences.hideRecentNames) else { return }
+        guard let notice = ActivityText.completionNotice(activity, hidingNames: preferences.hideRecentNames, hiddenPaths: hiddenPaths) else { return }
         if preferences.playSound { Self.playFinishSound(failed: activity.batchHadFailure) }
         if preferences.notifyWhenDone, !isPopoverShown {
             Notifier.post(title: notice.title, body: notice.body)
@@ -320,6 +331,7 @@ final class AppModel {
         let live = Set(activity.items.map(\.id))
         sourceURLs = sourceURLs.filter { live.contains($0.key) }
         destinations = destinations.filter { live.contains($0.key) }
+        uploadFolders = uploadFolders.filter { live.contains($0.key) }
     }
 
     private func startTicker() {
