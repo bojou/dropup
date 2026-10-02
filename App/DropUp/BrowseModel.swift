@@ -18,6 +18,9 @@ final class BrowseModel {
         var canCancel: Bool
     }
 
+    /// What the window is for. Choosing a folder is the same view with everything that changes or transfers files turned off.
+    enum Purpose { case browse, chooseFolder }
+
     /// One of the folders above the one on screen, shown as a column in the Columns view.
     struct ParentColumn: Identifiable, Equatable {
         var path: String
@@ -55,6 +58,7 @@ final class BrowseModel {
     /// Changes Undo can take back, the latest last, and changes Redo can do again. They live as long as the window.
     private(set) var undoStack: [BrowseChange] = []
     private(set) var redoStack: [BrowseChange] = []
+    let purpose: Purpose
     /// The server this window shows, and the login for it, kept so downloads go where the window is looking.
     let config: ServerConfig
     let password: String
@@ -78,8 +82,10 @@ final class BrowseModel {
         config: ServerConfig,
         password: String,
         session: BrowseSession,
+        purpose: Purpose = .browse,
         conflictPolicy: @escaping @MainActor () -> ConflictPolicy = { .keepBoth }
     ) {
+        self.purpose = purpose
         self.config = config
         self.password = password
         let start = RemotePath.normalizedDirectory(config.remoteDirectory)
@@ -95,6 +101,8 @@ final class BrowseModel {
     var canGoBack: Bool { history.canGoBack }
     var canGoForward: Bool { history.canGoForward }
     var isBusy: Bool { operation != nil }
+    /// False in a window that only picks a folder: nothing there changes the server.
+    var canChange: Bool { purpose == .browse }
     var canUndo: Bool { !undoStack.isEmpty && !isBusy }
     var canRedo: Bool { !redoStack.isEmpty && !isBusy }
     /// "Move “a.txt”", for the Undo button's tooltip.
@@ -402,7 +410,7 @@ final class BrowseModel {
         role: HistoryRole = .fresh,
         _ work: @escaping (BrowseSession) async throws -> (verb: String, result: FileOperationResult)?
     ) {
-        guard operation == nil else { return }
+        guard canChange, operation == nil else { return }
         problem = nil
         operation = Operation(title: title, detail: nil, fraction: nil, canCancel: canCancel)
         let folder = path

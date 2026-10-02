@@ -5,12 +5,20 @@ import DropUpCore
 
 /// The Browse window: every folder and file on the server, with drag-and-drop uploads into the folder on screen,
 /// downloads, and the everyday changes an FTP app offers (new folder, rename, move, copy, delete), with Undo and Redo.
+///
+/// The same view picks the upload folder (Change Folder in the popover): with a browse model in the choose-folder
+/// purpose it navigates the same way but offers nothing that changes or transfers anything, and ends in a
+/// "Use This Folder" button.
 struct BrowseView: View {
     static let idealSize = CGSize(width: 920, height: 620)
     static let minimumSize = CGSize(width: 700, height: 460)
+    /// Choosing a folder needs less room than working in one.
+    static let chooserSize = CGSize(width: 820, height: 560)
 
     let model: AppModel
     let browse: BrowseModel
+    /// Closes the window once a folder has been chosen (or the choice was cancelled). Only used when choosing a folder.
+    var finishChoosing: (() -> Void)?
     @State private var selection = Set<RemoteEntry.ID>()
     @State private var sortOrder = [KeyPathComparator(\RemoteEntry.name)]
     @State private var isDropTargeted = false
@@ -35,6 +43,11 @@ struct BrowseView: View {
 
     private static let columnWidth: CGFloat = 170
     private static let widestStrip: CGFloat = 345
+    /// How faint files look when the window only picks a folder.
+    private static let contextOpacity = 0.45
+
+    /// False when this window only picks the upload folder: nothing is renamed, moved, deleted, uploaded or downloaded.
+    private var canEdit: Bool { browse.canChange }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -55,7 +68,7 @@ struct BrowseView: View {
                 } message: {
                     Text("Enter a new name for “\(renaming?.name ?? "")”.")
                 }
-            if !model.downloads.items.isEmpty {
+            if canEdit, !model.downloads.items.isEmpty {
                 Divider()
                 downloadsPanel
             }
@@ -75,15 +88,21 @@ struct BrowseView: View {
                 } message: {
                     Text(deleteMessage)
                 }
+            if !canEdit {
+                Divider()
+                chooserBar
+            }
         }
         .frame(
             minWidth: Self.minimumSize.width, idealWidth: Self.idealSize.width, maxWidth: .infinity,
             minHeight: Self.minimumSize.height, idealHeight: Self.idealSize.height, maxHeight: .infinity
         )
-        .dropDestination(for: URL.self) { urls, _ in drop(urls, into: browse.path) } isTargeted: { isDropTargeted = $0 }
+        .when(canEdit) { content in
+            content.dropDestination(for: URL.self) { urls, _ in drop(urls, into: browse.path) } isTargeted: { isDropTargeted = $0 }
+        }
         .overlay { if isDropTargeted { dropHighlight } }
         .background(shortcuts)
-        .navigationTitle(browse.path == "/" ? browse.serverName : (browse.path as NSString).lastPathComponent)
+        .navigationTitle(title)
         .onAppear {
             restoreSort()
             browse.setShowsParents(showsColumns)
@@ -107,6 +126,11 @@ struct BrowseView: View {
     }
 
     // MARK: What is shown
+
+    private var title: String {
+        if !canEdit { return "Choose Upload Folder" }
+        return browse.path == "/" ? browse.serverName : (browse.path as NSString).lastPathComponent
+    }
 
     private var visible: [RemoteEntry] {
         let shown = showsHidden ? browse.entries : browse.entries.filter { !$0.isHidden }
@@ -180,44 +204,46 @@ struct BrowseView: View {
             .help("Reload this folder")
             .accessibilityLabel("Reload")
 
-            Divider().frame(height: 18)
+            if canEdit {
+                Divider().frame(height: 18)
 
-            Button { browse.undo() } label: {
-                Image(systemName: "arrow.uturn.backward").frame(width: 24, height: 22)
-            }
-            .disabled(!browse.canUndo)
-            .keyboardShortcut("z", modifiers: .command)
-            .help(browse.undoTitle.map { "Undo \($0)" } ?? "Nothing to undo")
-            .accessibilityLabel("Undo")
+                Button { browse.undo() } label: {
+                    Image(systemName: "arrow.uturn.backward").frame(width: 24, height: 22)
+                }
+                .disabled(!browse.canUndo)
+                .keyboardShortcut("z", modifiers: .command)
+                .help(browse.undoTitle.map { "Undo \($0)" } ?? "Nothing to undo")
+                .accessibilityLabel("Undo")
 
-            Button { browse.redo() } label: {
-                Image(systemName: "arrow.uturn.forward").frame(width: 24, height: 22)
-            }
-            .disabled(!browse.canRedo)
-            .keyboardShortcut("z", modifiers: [.command, .shift])
-            .help(browse.redoTitle.map { "Redo \($0)" } ?? "Nothing to redo")
-            .accessibilityLabel("Redo")
+                Button { browse.redo() } label: {
+                    Image(systemName: "arrow.uturn.forward").frame(width: 24, height: 22)
+                }
+                .disabled(!browse.canRedo)
+                .keyboardShortcut("z", modifiers: [.command, .shift])
+                .help(browse.redoTitle.map { "Redo \($0)" } ?? "Nothing to redo")
+                .accessibilityLabel("Redo")
 
-            Button { startNewFolder() } label: {
-                Image(systemName: "folder.badge.plus").frame(width: 24, height: 22)
-            }
-            .disabled(browse.isBusy)
-            .help("New folder")
-            .accessibilityLabel("New Folder")
+                Button { startNewFolder() } label: {
+                    Image(systemName: "folder.badge.plus").frame(width: 24, height: 22)
+                }
+                .disabled(browse.isBusy)
+                .help("New folder")
+                .accessibilityLabel("New Folder")
 
-            Button { download(selectedEntries, askingWhere: false) } label: {
-                Image(systemName: "arrow.down.circle").frame(width: 24, height: 22)
-            }
-            .disabled(selection.isEmpty)
-            .help("Save the selected items to your Downloads folder")
-            .accessibilityLabel("Download")
+                Button { download(selectedEntries, askingWhere: false) } label: {
+                    Image(systemName: "arrow.down.circle").frame(width: 24, height: 22)
+                }
+                .disabled(selection.isEmpty)
+                .help("Save the selected items to your Downloads folder")
+                .accessibilityLabel("Download")
 
-            Button { askToDelete(selectedEntries) } label: {
-                Image(systemName: "trash").frame(width: 24, height: 22)
+                Button { askToDelete(selectedEntries) } label: {
+                    Image(systemName: "trash").frame(width: 24, height: 22)
+                }
+                .disabled(selection.isEmpty || browse.isBusy)
+                .help("Delete the selected items")
+                .accessibilityLabel("Delete")
             }
-            .disabled(selection.isEmpty || browse.isBusy)
-            .help("Delete the selected items")
-            .accessibilityLabel("Delete")
 
             Divider().frame(height: 18)
 
@@ -259,13 +285,16 @@ struct BrowseView: View {
                     .fontWeight(step.path == browse.path ? .semibold : .regular)
                     .help(step.path)
                     // Dropping on a step moves dragged items there, or uploads dragged files there.
-                    .dropDestination(for: String.self) { texts, _ in
-                        moveDropped(texts, toFolder: step.path)
-                        return !texts.isEmpty
-                    } isTargeted: { targeted in
-                        if targeted { crumbTarget = step.path } else if crumbTarget == step.path { crumbTarget = nil }
+                    .when(canEdit) { crumb in
+                        crumb
+                            .dropDestination(for: String.self) { texts, _ in
+                                moveDropped(texts, toFolder: step.path)
+                                return !texts.isEmpty
+                            } isTargeted: { targeted in
+                                if targeted { crumbTarget = step.path } else if crumbTarget == step.path { crumbTarget = nil }
+                            }
+                            .dropDestination(for: URL.self) { urls, _ in drop(urls, into: step.path) }
                     }
-                    .dropDestination(for: URL.self) { urls, _ in drop(urls, into: step.path) }
                 }
             }
             .font(.system(size: 12))
@@ -369,16 +398,21 @@ struct BrowseView: View {
                 .fill(leadsDown ? Color.accentColor.opacity(0.22) : (crumbTarget == folderPath ? Color.accentColor.opacity(0.12) : Color.clear))
         )
         .contentShape(Rectangle())
+        // When choosing a folder, files are only there for context.
+        .opacity(canEdit || entry.kind != .file ? 1 : Self.contextOpacity)
         .onTapGesture { if entry.kind != .file { browse.go(to: folderPath) } }
         .help(folderPath)
-        .dropDestination(for: String.self) { texts, _ in
-            guard entry.kind == .folder else { return false }
-            moveDropped(texts, toFolder: folderPath)
-            return !texts.isEmpty
-        } isTargeted: { targeted in
-            if targeted { crumbTarget = folderPath } else if crumbTarget == folderPath { crumbTarget = nil }
+        .when(canEdit) { row in
+            row
+                .dropDestination(for: String.self) { texts, _ in
+                    guard entry.kind == .folder else { return false }
+                    moveDropped(texts, toFolder: folderPath)
+                    return !texts.isEmpty
+                } isTargeted: { targeted in
+                    if targeted { crumbTarget = folderPath } else if crumbTarget == folderPath { crumbTarget = nil }
+                }
+                .dropDestination(for: URL.self) { urls, _ in drop(urls, into: entry.kind == .folder ? folderPath : column.path) }
         }
-        .dropDestination(for: URL.self) { urls, _ in drop(urls, into: entry.kind == .folder ? folderPath : column.path) }
     }
 
     private func banner<Trailing: View>(
@@ -400,29 +434,18 @@ struct BrowseView: View {
         }
     }
 
+    @ViewBuilder
     private var table: some View {
+        if canEdit { editableTable } else { chooserTable }
+    }
+
+    private var editableTable: some View {
         Table(of: RemoteEntry.self, selection: $selection, sortOrder: $sortOrder) {
-            TableColumn("Name", value: \.name) { entry in
-                Label {
-                    Text(entry.name).lineLimit(1).truncationMode(.middle)
-                } icon: {
-                    Image(systemName: Self.icon(for: entry))
-                        .foregroundStyle(entry.kind == .folder ? Color.accentColor : Color.secondary)
-                }
-                .opacity(isCut(entry) ? 0.5 : 1)
-            }
-            TableColumn("Size", value: \.sortSize) { entry in
-                Text(entry.kind == .folder ? "—" : (entry.size.map(Format.bytes) ?? "—"))
-                    .monospacedDigit()
-                    .foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity, alignment: .trailing)
-            }
-            .width(min: 70, ideal: 90, max: 130)
-            TableColumn("Modified", value: \.sortDate) { entry in
-                Text(entry.modified.map { $0.formatted(date: .abbreviated, time: .shortened) } ?? "—")
-                    .foregroundStyle(.secondary)
-            }
-            .width(min: 120, ideal: 170, max: 230)
+            TableColumn("Name", value: \.name) { entry in nameCell(entry) }
+            TableColumn("Size", value: \.sortSize) { entry in sizeCell(entry) }
+                .width(min: 70, ideal: 90, max: 130)
+            TableColumn("Modified", value: \.sortDate) { entry in modifiedCell(entry) }
+                .width(min: 120, ideal: 170, max: 230)
         } rows: {
             ForEach(visible) { entry in
                 TableRow(entry)
@@ -455,10 +478,63 @@ struct BrowseView: View {
         }
     }
 
+    /// The same listing with nothing to drag, drop, rename or delete: only folders can be opened.
+    private var chooserTable: some View {
+        Table(of: RemoteEntry.self, selection: $selection, sortOrder: $sortOrder) {
+            TableColumn("Name", value: \.name) { entry in nameCell(entry) }
+            TableColumn("Size", value: \.sortSize) { entry in sizeCell(entry) }
+                .width(min: 70, ideal: 90, max: 130)
+            TableColumn("Modified", value: \.sortDate) { entry in modifiedCell(entry) }
+                .width(min: 120, ideal: 170, max: 230)
+        } rows: {
+            ForEach(visible) { entry in
+                TableRow(entry)
+            }
+        }
+        .contextMenu(forSelectionType: RemoteEntry.ID.self) { ids in
+            menu(for: ids)
+        } primaryAction: { ids in
+            activate(ids)
+        }
+        .onKeyPress(.return) {
+            guard !selection.isEmpty else { return .ignored }
+            activate(selection)
+            return .handled
+        }
+    }
+
+    private func nameCell(_ entry: RemoteEntry) -> some View {
+        Label {
+            Text(entry.name).lineLimit(1).truncationMode(.middle)
+        } icon: {
+            Image(systemName: Self.icon(for: entry))
+                .foregroundStyle(entry.kind == .folder ? Color.accentColor : Color.secondary)
+        }
+        .opacity(isCut(entry) ? 0.5 : (canEdit || entry.kind != .file ? 1 : Self.contextOpacity))
+    }
+
+    private func sizeCell(_ entry: RemoteEntry) -> some View {
+        Text(entry.kind == .folder ? "—" : (entry.size.map(Format.bytes) ?? "—"))
+            .monospacedDigit()
+            .foregroundStyle(.secondary)
+            .frame(maxWidth: .infinity, alignment: .trailing)
+            .opacity(canEdit || entry.kind != .file ? 1 : Self.contextOpacity)
+    }
+
+    private func modifiedCell(_ entry: RemoteEntry) -> some View {
+        Text(entry.modified.map { $0.formatted(date: .abbreviated, time: .shortened) } ?? "—")
+            .foregroundStyle(.secondary)
+            .opacity(canEdit || entry.kind != .file ? 1 : Self.contextOpacity)
+    }
+
     @ViewBuilder
     private func menu(for ids: Set<RemoteEntry.ID>) -> some View {
         let chosen = visible.filter { ids.contains($0.id) }
-        if chosen.isEmpty {
+        if !canEdit {
+            if chosen.count == 1, chosen[0].kind != .file {
+                Button("Open") { activate(ids) }
+            }
+        } else if chosen.isEmpty {
             Button("New Folder") { startNewFolder() }
             if browse.clipboard != nil {
                 Button("Paste") { browse.paste() }
@@ -491,15 +567,19 @@ struct BrowseView: View {
             Image(systemName: "tray").font(.system(size: 30)).foregroundStyle(.tertiary)
             Text(browse.entries.isEmpty ? "This folder is empty" : "Only hidden items here")
                 .font(.system(size: 13, weight: .medium))
-            Text("Drop files here to upload them to \(browse.path)")
-                .font(.system(size: 12))
-                .foregroundStyle(.secondary)
+            if canEdit {
+                Text("Drop files here to upload them to \(browse.path)")
+                    .font(.system(size: 12))
+                    .foregroundStyle(.secondary)
+            }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .contextMenu {
-            Button("New Folder") { startNewFolder() }
-            if browse.clipboard != nil {
-                Button("Paste") { browse.paste() }
+        .when(canEdit) { empty in
+            empty.contextMenu {
+                Button("New Folder") { startNewFolder() }
+                if browse.clipboard != nil {
+                    Button("Paste") { browse.paste() }
+                }
             }
         }
     }
@@ -528,23 +608,25 @@ struct BrowseView: View {
             Button("Open") { activate(selection) }
                 .keyboardShortcut(.downArrow, modifiers: .command)
                 .disabled(selection.isEmpty)
-            Button("Cut") { browse.cut(selectedEntries) }
-                .keyboardShortcut("x", modifiers: .command)
-                .disabled(selection.isEmpty)
-            Button("Copy") { browse.copyToClipboard(selectedEntries) }
-                .keyboardShortcut("c", modifiers: .command)
-                .disabled(selection.isEmpty)
-            Button("Duplicate") { browse.duplicate(selectedEntries) }
-                .keyboardShortcut("d", modifiers: .command)
-                .disabled(selection.isEmpty || browse.isBusy)
-            Button("Paste") { browse.paste() }
-                .keyboardShortcut("v", modifiers: .command)
-                .disabled(browse.clipboard == nil)
-            Button("Delete") { askToDelete(selectedEntries) }
-                .keyboardShortcut(.delete, modifiers: .command)
-                .disabled(selection.isEmpty)
-            Button("New Folder") { startNewFolder() }
-                .keyboardShortcut("n", modifiers: [.command, .shift])
+            if canEdit {
+                Button("Cut") { browse.cut(selectedEntries) }
+                    .keyboardShortcut("x", modifiers: .command)
+                    .disabled(selection.isEmpty)
+                Button("Copy") { browse.copyToClipboard(selectedEntries) }
+                    .keyboardShortcut("c", modifiers: .command)
+                    .disabled(selection.isEmpty)
+                Button("Duplicate") { browse.duplicate(selectedEntries) }
+                    .keyboardShortcut("d", modifiers: .command)
+                    .disabled(selection.isEmpty || browse.isBusy)
+                Button("Paste") { browse.paste() }
+                    .keyboardShortcut("v", modifiers: .command)
+                    .disabled(browse.clipboard == nil)
+                Button("Delete") { askToDelete(selectedEntries) }
+                    .keyboardShortcut(.delete, modifiers: .command)
+                    .disabled(selection.isEmpty)
+                Button("New Folder") { startNewFolder() }
+                    .keyboardShortcut("n", modifiers: [.command, .shift])
+            }
             Button("As List") { showsColumns = false }
                 .keyboardShortcut("2", modifiers: .command)
             Button("As Columns") { showsColumns = true }
@@ -587,7 +669,7 @@ struct BrowseView: View {
 
     /// Progress of uploads in flight, with the same Cancel All as the popover.
     private var uploadProgress: Double? {
-        guard case .uploading(let fraction) = model.activity.menubarState(now: model.now) else { return nil }
+        guard canEdit, case .uploading(let fraction) = model.activity.menubarState(now: model.now) else { return nil }
         return fraction
     }
 
@@ -633,7 +715,7 @@ struct BrowseView: View {
     private var statusBar: some View {
         HStack(spacing: 12) {
             Text(summary).font(.system(size: 11)).foregroundStyle(.secondary)
-            if let clipboard = browse.clipboard {
+            if canEdit, let clipboard = browse.clipboard {
                 Label(
                     clipboard.mode == .cut
                         ? "\(clipboard.entries.count) cut. Open a folder and choose Paste to move."
@@ -661,14 +743,52 @@ struct BrowseView: View {
         return selection.isEmpty ? total : "\(selection.count) selected · \(total)"
     }
 
+    /// The end of choosing a folder: where uploads will go, and the button that makes it so.
+    private var chooserBar: some View {
+        HStack(spacing: 12) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Uploads will go to").font(.system(size: 11)).foregroundStyle(.secondary)
+                Text(browse.path)
+                    .font(.system(size: 12, design: .monospaced))
+                    .lineLimit(1)
+                    .truncationMode(.head)
+                    .textSelection(.enabled)
+            }
+            Spacer(minLength: 12)
+            Button("Cancel") { finishChoosing?() }
+                .keyboardShortcut(.cancelAction)
+            Button("Use This Folder") { useThisFolder() }
+                .buttonStyle(.borderedProminent)
+                .help("Send the next uploads to \(browse.path)")
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
+    }
+
+    /// Saves the folder on screen as the upload folder. It applies from the next upload; uploads already running finish where they were going.
+    private func useThisFolder() {
+        guard model.config?.credentialKey == browse.credentialKey else {
+            browse.report("The server was changed in Settings. Close this window and open Change Folder again.")
+            return
+        }
+        do {
+            try model.changeRemoteDirectory(to: browse.path)
+        } catch {
+            browse.report("Couldn’t save: \(error.localizedDescription)")
+            return
+        }
+        finishChoosing?()
+    }
+
     // MARK: Actions
 
     /// Double-click or ⌘↓: open a folder (or a link, which is tried as one), or download the files.
+    /// When choosing a folder, files just stay where they are.
     private func activate(_ ids: Set<RemoteEntry.ID>) {
         let chosen = visible.filter { ids.contains($0.id) }
         if let place = chosen.first(where: { $0.kind != .file }) {
             browse.enter(folderNamed: place.name)
-        } else {
+        } else if canEdit {
             download(chosen, askingWhere: false)
         }
     }
@@ -679,26 +799,26 @@ struct BrowseView: View {
     }
 
     private func startNewFolder() {
-        guard !browse.isBusy else { return }
+        guard canEdit, !browse.isBusy else { return }
         newFolderName = browse.suggestedFolderName
         isCreatingFolder = true
     }
 
     private func startRename(_ entry: RemoteEntry) {
-        guard !browse.isBusy else { return }
+        guard canEdit, !browse.isBusy else { return }
         renaming = entry
         renameText = entry.name
         isRenaming = true
     }
 
     private func startMove(_ entries: [RemoteEntry]) {
-        guard !browse.isBusy, !entries.isEmpty else { return }
+        guard canEdit, !browse.isBusy, !entries.isEmpty else { return }
         moving = entries
         isChoosingDestination = true
     }
 
     private func askToDelete(_ entries: [RemoteEntry]) {
-        guard !browse.isBusy, !entries.isEmpty else { return }
+        guard canEdit, !browse.isBusy, !entries.isEmpty else { return }
         deleting = entries
         isConfirmingDelete = true
     }
@@ -717,7 +837,7 @@ struct BrowseView: View {
     }
 
     private func download(_ files: [RemoteEntry], askingWhere: Bool) {
-        guard !files.isEmpty else { return }
+        guard canEdit, !files.isEmpty else { return }
         let directory: URL
         if askingWhere {
             guard let chosen = Self.chooseDownloadFolder() else { return }
@@ -753,6 +873,7 @@ struct BrowseView: View {
 
     /// Files dragged in from the Mac go to `folder` on the server.
     private func drop(_ urls: [URL], into folder: String) -> Bool {
+        guard canEdit else { return false }
         guard model.config?.credentialKey == browse.credentialKey else {
             browse.report("The server was changed in Settings. Close this window and open Browse again.")
             return false
@@ -806,6 +927,7 @@ struct BrowseView: View {
 
     /// Moves what was dragged into `destination`. Dragging one of several selected rows takes the whole selection along.
     private func moveDropped(_ texts: [String], toFolder destination: String) {
+        guard canEdit else { return }
         guard model.config?.credentialKey == browse.credentialKey else {
             browse.report("The server was changed in Settings. Close this window and open Browse again.")
             return
@@ -833,6 +955,14 @@ struct BrowseView: View {
         case .file: "doc"
         case .link: "arrow.turn.up.right"
         }
+    }
+}
+
+private extension View {
+    /// Applies `transform` only when `condition` holds. The condition must stay the same while the view is on screen.
+    @ViewBuilder
+    func when<Transformed: View>(_ condition: Bool, _ transform: (Self) -> Transformed) -> some View {
+        if condition { transform(self) } else { self }
     }
 }
 

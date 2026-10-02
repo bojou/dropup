@@ -2,7 +2,7 @@ import AppKit
 import SwiftUI
 import DropUpCore
 
-/// Opens the Onboarding, Settings and Browse windows.
+/// Opens the Onboarding, Settings, Browse and Change Folder windows.
 ///
 /// DropUp normally lives in the menubar only (LSUIElement). While one of its windows is open it also
 /// gets a Dock icon, so the window is easy to find again after switching to another app. Closing the
@@ -14,6 +14,8 @@ final class WindowCoordinator: NSObject, NSWindowDelegate {
     private var settingsWindow: NSWindow?
     private var browseWindow: NSWindow?
     private var browseModel: BrowseModel?
+    private var chooseWindow: NSWindow?
+    private var chooseModel: BrowseModel?
 
     init(model: AppModel) {
         self.model = model
@@ -59,6 +61,23 @@ final class WindowCoordinator: NSObject, NSWindowDelegate {
         present(browseWindow)
     }
 
+    /// Change Folder: the Browse view with nothing that changes files, and a button that makes the folder on screen
+    /// the upload folder. One at a time.
+    func showChooseFolder() {
+        if chooseWindow == nil {
+            guard let browse = model.makeBrowseModel(purpose: .chooseFolder) else { return }
+            chooseModel = browse
+            let view = BrowseView(model: model, browse: browse, finishChoosing: { [weak self] in self?.chooseWindow?.close() })
+            let window = makeWindow(title: "Choose Upload Folder", content: view)
+            window.styleMask.insert([.resizable, .miniaturizable])
+            window.setContentSize(BrowseView.chooserSize)
+            window.contentMinSize = BrowseView.minimumSize
+            window.center()
+            chooseWindow = window
+        }
+        present(chooseWindow)
+    }
+
     private func makeWindow<Content: View>(title: String, content: Content) -> NSWindow {
         let window = NSWindow(contentViewController: NSHostingController(rootView: content))
         window.title = title
@@ -95,7 +114,12 @@ final class WindowCoordinator: NSObject, NSWindowDelegate {
             let export = model.dragExport
             Task { await export.removeFetchedFiles() }
         }
-        let anotherIsOpen = [onboardingWindow, settingsWindow, browseWindow].contains { window in
+        if closing === chooseWindow {
+            chooseWindow = nil
+            chooseModel?.close()
+            chooseModel = nil
+        }
+        let anotherIsOpen = [onboardingWindow, settingsWindow, browseWindow, chooseWindow].contains { window in
             guard let window else { return false }
             return window !== closing && window.isVisible
         }
