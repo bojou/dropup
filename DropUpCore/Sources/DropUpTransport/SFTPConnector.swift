@@ -309,6 +309,30 @@ final class SFTPSession: ServerSession, @unchecked Sendable {
         }
     }
 
+    func makeDirectory(atPath path: String) async throws {
+        do {
+            try await sftp.createDirectory(atPath: path)
+        } catch {
+            throw Self.map(error)
+        }
+    }
+
+    func removeDirectory(atPath path: String) async throws {
+        do {
+            try await sftp.rmdir(at: path)
+        } catch {
+            throw Self.map(error)
+        }
+    }
+
+    func rename(from oldPath: String, to newPath: String) async throws {
+        do {
+            try await sftp.rename(at: oldPath, to: newPath)
+        } catch {
+            throw Self.map(error)
+        }
+    }
+
     func close() async {
         try? await sftp.close()
         try? await ssh.close()

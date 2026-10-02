@@ -222,6 +222,28 @@ public actor FTPSession: ServerSession {
         guard reply.isPositiveCompletion else { throw Self.rejected(reply) }
     }
 
+    public func makeDirectory(atPath path: String) async throws {
+        try Self.validate(path)
+        let reply = try await command("MKD \(path)")
+        guard reply.isPositiveCompletion else { throw Self.rejected(reply) }
+    }
+
+    public func removeDirectory(atPath path: String) async throws {
+        try Self.validate(path)
+        let reply = try await command("RMD \(path)")
+        guard reply.isPositiveCompletion else { throw Self.rejected(reply) }
+    }
+
+    public func rename(from oldPath: String, to newPath: String) async throws {
+        try Self.validate(oldPath)
+        try Self.validate(newPath)
+        // RNFR names the item (350: waiting for the new name), RNTO then does the move.
+        let from = try await command("RNFR \(oldPath)")
+        guard from.isPositiveIntermediate else { throw Self.rejected(from) }
+        let to = try await command("RNTO \(newPath)")
+        guard to.isPositiveCompletion else { throw Self.rejected(to) }
+    }
+
     public func close() async {
         guard !isClosed else { return }
         isClosed = true
