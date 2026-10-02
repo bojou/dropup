@@ -7,7 +7,8 @@ public enum MenubarState: Equatable, Sendable {
     case uploading(fraction: Double)
     /// Everything in the last batch went through. Shown briefly, then back to idle.
     case succeeded
-    /// Something failed and the user hasn't looked yet.
+    /// Something in the latest batch failed and the user hasn't looked yet. A new batch starts from a clean slate:
+    /// the icon shows how the uploads in front of it went, not how an earlier one did.
     case failed
 }
 
@@ -123,10 +124,12 @@ public struct UploadActivity: Equatable, Sendable {
         switch event {
         case .queued(let id, let fileName, let totalBytes):
             if !isBusy {
-                // A new batch begins: restart the ring and the speed measurement.
+                // A new batch begins: restart the ring and the speed measurement. A failure from an earlier batch
+                // is not carried over, or every upload after it would show as failed until someone opened the popover.
                 batchIDs = []
                 samples = []
                 bytesFinished = 0
+                hasUnseenFailure = false
             }
             batchIDs.insert(id)
             // Active items stay in drop order after the already-active ones; finished go below.

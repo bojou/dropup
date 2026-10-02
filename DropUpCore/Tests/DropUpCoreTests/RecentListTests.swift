@@ -112,7 +112,6 @@ struct RecentListTests {
         for index in 0..<3 { finish(&activity, "ok\(index)", at: t0.addingTimeInterval(Double(index + 1))) }
         activity.applyRecentPolicy(RecentPolicy(limit: 3, lifetime: nil), now: t0.addingTimeInterval(5))
         #expect(activity.items.map(\.fileName) == ["ok2", "ok1", "ok0"])
-        #expect(!activity.hasUnseenFailure)
 
         // And so does the clock.
         var other = UploadActivity()
@@ -122,7 +121,17 @@ struct RecentListTests {
         #expect(other.hasUnseenFailure)
         other.applyRecentPolicy(RecentPolicy(limit: 10, lifetime: 60), now: t0.addingTimeInterval(60))
         #expect(other.items.isEmpty)
-        #expect(!other.hasUnseenFailure)
+    }
+
+    @Test func theIconKeepsShowingAFailureTheListNoLongerHolds() {
+        var activity = UploadActivity()
+        finish(&activity, "bad", at: t0, fails: true)
+        // The list may be set to keep nothing, or to clear itself; the failure is still unseen.
+        activity.applyRecentPolicy(RecentPolicy(limit: 10, lifetime: 1), now: t0.addingTimeInterval(5))
+        #expect(activity.items.isEmpty)
+        #expect(activity.menubarState(now: t0.addingTimeInterval(5)) == .failed)
+        activity.markFailuresSeen()
+        #expect(activity.menubarState(now: t0.addingTimeInterval(5)) == .idle)
     }
 
     @Test func withTheListOffOnlyFailuresStay() {
@@ -132,7 +141,6 @@ struct RecentListTests {
         finish(&activity, "stopped", at: t0.addingTimeInterval(2), cancels: true)
         activity.applyRecentPolicy(RecentPolicy(limit: 0, lifetime: nil), now: t0.addingTimeInterval(3))
         #expect(activity.items.map(\.fileName) == ["bad"])
-        #expect(activity.hasUnseenFailure)
         // Dismissing it empties the list.
         activity.clearFinished()
         #expect(activity.items.isEmpty)

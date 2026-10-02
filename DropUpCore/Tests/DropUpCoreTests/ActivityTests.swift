@@ -107,6 +107,36 @@ struct UploadActivityTests {
         #expect(!activity.hasUnseenFailure)
     }
 
+    @Test func uploadsAfterAFailureAreNotMarkedFailed() {
+        var activity = UploadActivity()
+        let bad = queue(&activity, "bad.zip", bytes: 10, at: t0)
+        activity.apply(.failed(id: bad, .unsupportedItem), now: t0)
+        #expect(activity.menubarState(now: t0.addingTimeInterval(5)) == .failed)
+
+        // The popover stays closed and the list isn't cleared; the next upload goes through.
+        let good = queue(&activity, "good.png", bytes: 10, at: t0.addingTimeInterval(10))
+        #expect(activity.menubarState(now: t0.addingTimeInterval(10)) == .uploading(fraction: 0))
+        activity.apply(.succeeded(id: good, remotePath: "/good.png"), now: t0.addingTimeInterval(11))
+        #expect(activity.menubarState(now: t0.addingTimeInterval(11.5)) == .succeeded)
+        #expect(activity.menubarState(now: t0.addingTimeInterval(14)) == .idle)
+        // The earlier failure is still in the list for whoever looks.
+        #expect(activity.items.map(\.fileName) == ["good.png", "bad.zip"])
+    }
+
+    @Test func aFailureInTheBatchWinsOverItsSuccessesInEitherOrder() {
+        for failsFirst in [true, false] {
+            var activity = UploadActivity()
+            let first = queue(&activity, "first", bytes: 1, at: t0)
+            let second = queue(&activity, "second", bytes: 1, at: t0)
+            let (failing, passing) = failsFirst ? (first, second) : (second, first)
+            activity.apply(.failed(id: failing, .unsupportedItem), now: t0.addingTimeInterval(1))
+            activity.apply(.succeeded(id: passing, remotePath: "/x"), now: t0.addingTimeInterval(2))
+            #expect(activity.menubarState(now: t0.addingTimeInterval(2.5)) == .failed)
+            activity.markFailuresSeen()
+            #expect(activity.menubarState(now: t0.addingTimeInterval(2.5)) == .succeeded)
+        }
+    }
+
     @Test func measuresSpeedOverASlidingWindow() {
         var activity = UploadActivity()
         let id = queue(&activity, "big", bytes: 10_000, at: t0)

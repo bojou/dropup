@@ -114,10 +114,7 @@ extension UploadActivity {
             }
             trim(toRecent: RecentPolicy.failureCap)
         }
-        // The badge is for failures that are still listed.
-        if !items.contains(where: { if case .failed = $0.state { true } else { false } }) {
-            hasUnseenFailure = false
-        }
+        // The icon's failure mark is not touched here: it belongs to the upload that failed, not to the list.
     }
 
     /// When the next finished upload is due to be removed under `lifetime`, or nil if none ever will be.
