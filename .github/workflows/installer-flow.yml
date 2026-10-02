@@ -12,6 +12,7 @@ on:
 jobs:
   flow:
     runs-on: macos-15
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
 
@@ -35,14 +36,7 @@ jobs:
       - name: Mount, install, launch
         run: |
           DMG="$HOME/Downloads/DropUp-9.9.9.dmg"
-          open "$DMG" || true
-          for _ in $(seq 1 20); do [ -d /Volumes/DropUp/DropUp.app ] && break; sleep 1; done
-          if [ -d /Volumes/DropUp/DropUp.app ]; then
-            echo "Mounted by Finder-style open"
-          else
-            echo "open did not mount it, using hdiutil attach"
-            hdiutil attach "$DMG"
-          fi
+          hdiutil attach "$DMG"
           ls -la /Volumes/DropUp
           echo "--- hdiutil info -plist"
           hdiutil info -plist
@@ -64,8 +58,10 @@ jobs:
               print(w[kCGWindowName as String] ?? "-", "layer", w[kCGWindowLayer as String] ?? "?", "onscreen", w[kCGWindowIsOnscreen as String] ?? false, w[kCGWindowBounds as String] ?? "")
           }
           EOF
-          swift "$RUNNER_TEMP/windows.swift" || true
-          screencapture -x "$RUNNER_TEMP/shot.png" || echo "no screenshot"
+          perl -e 'alarm shift; exec @ARGV' 90 swift "$RUNNER_TEMP/windows.swift" || echo "window list failed"
+          perl -e 'alarm shift; exec @ARGV' 20 screencapture -x "$RUNNER_TEMP/shot.png" || echo "no screenshot"
+          echo "--- app log, again"
+          cat "$RUNNER_TEMP/app.log"
 
       - uses: actions/upload-artifact@v4
         if: always()
