@@ -50,6 +50,18 @@ struct ServerConfigTests {
         #expect(config.credentialKey == "sftp://me@example.com:22")
     }
 
+    @Test func changingTheFolderKeepsTheServerLoginAndPasswordKey() {
+        let config = ServerConfig(transferProtocol: .sftp, host: "example.com", port: 2222, username: "me", remoteDirectory: "/old")
+        let moved = config.withRemoteDirectory("new//drops/")
+        #expect(moved.remoteDirectory == "/new/drops")
+        #expect(moved.transferProtocol == .sftp)
+        #expect(moved.host == "example.com")
+        #expect(moved.port == 2222)
+        #expect(moved.username == "me")
+        #expect(moved.credentialKey == config.credentialKey)
+        #expect(config.remoteDirectory == "/old")
+    }
+
     @Test func settingsStoreNeedsOnboardingUntilValidConfigSaved() throws {
         let store = InMemorySettingsStore()
         #expect(store.needsOnboarding)

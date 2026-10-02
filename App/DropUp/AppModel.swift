@@ -27,6 +27,8 @@ final class AppModel {
     var panelState: DropPanelState = .hidden
     /// A file is being dragged over the menubar icon itself.
     var isDragOverIcon = false
+    /// The popover is showing its folder page instead of the upload list.
+    var isChoosingFolder = false
     @ObservationIgnored var isPopoverShown = false
     @ObservationIgnored var onNeedsOnboarding: (() -> Void)?
 
@@ -115,6 +117,8 @@ final class AppModel {
 
     func popoverVisibilityChanged(_ shown: Bool) {
         isPopoverShown = shown
+        // Each time the popover opens it starts on the upload list.
+        isChoosingFolder = false
         if shown { activity.markFailuresSeen() }
     }
 
@@ -132,6 +136,14 @@ final class AppModel {
         try credentials.setPassword(password, for: config.credentialKey)
         try settings.saveServerConfig(config)
         self.config = config
+    }
+
+    /// Points future uploads at another folder on the same server. Only the folder is saved; the password stays as it is.
+    func changeRemoteDirectory(to directory: String) throws {
+        guard let current = config else { return }
+        let updated = current.withRemoteDirectory(directory)
+        try settings.saveServerConfig(updated)
+        config = updated
     }
 
     func updatePreferences(_ change: (inout Preferences) -> Void) {

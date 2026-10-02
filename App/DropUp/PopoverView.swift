@@ -8,8 +8,16 @@ struct PopoverView: View {
     @State private var isDropTargeted = false
 
     var body: some View {
+        if model.isChoosingFolder {
+            PopoverFolderChooser(model: model)
+        } else {
+            uploads
+        }
+    }
+
+    private var uploads: some View {
         let activity = model.activity
-        VStack(spacing: 6) {
+        return VStack(spacing: 6) {
             header
             if activity.isBusy {
                 dropMoreStrip
@@ -54,6 +62,13 @@ struct PopoverView: View {
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
                     .truncationMode(.middle)
+                if model.config != nil {
+                    Button("Change folder") { model.isChoosingFolder = true }
+                        .buttonStyle(.plain)
+                        .font(.system(size: 11))
+                        .foregroundStyle(Color.accentColor)
+                        .accessibilityLabel("Change upload folder")
+                }
             }
             Spacer(minLength: 0)
             Button(action: openSettings) {
