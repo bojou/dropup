@@ -30,6 +30,11 @@ struct BrowseView: View {
     @AppStorage("browse.showsHiddenFiles") private var showsHidden = false
     @AppStorage("browse.sortKey") private var storedSortKey = RemoteEntry.SortKey.name.rawValue
     @AppStorage("browse.sortAscending") private var storedAscending = true
+    /// Columns view: the folders above the one on screen are shown beside it, as in Finder's column view.
+    @AppStorage("browse.showsParentColumns") private var showsColumns = false
+
+    private static let columnWidth: CGFloat = 170
+    private static let widestStrip: CGFloat = 345
 
     var body: some View {
         VStack(spacing: 0) {
@@ -81,8 +86,10 @@ struct BrowseView: View {
         .navigationTitle(browse.path == "/" ? browse.serverName : (browse.path as NSString).lastPathComponent)
         .onAppear {
             restoreSort()
+            browse.setShowsParents(showsColumns)
             browse.start()
         }
+        .onChange(of: showsColumns) { browse.setShowsParents(showsColumns) }
         .onChange(of: browse.path) { selection = [] }
         .onChange(of: browse.entries) { applySelectionRequest() }
         .onChange(of: sortOrder) { storeSort() }
@@ -211,6 +218,16 @@ struct BrowseView: View {
             .disabled(selection.isEmpty || browse.isBusy)
             .help("Delete the selected items")
             .accessibilityLabel("Delete")
+
+            Divider().frame(height: 18)
+
+            Picker("View", selection: $showsColumns) {
+                Image(systemName: "list.bullet").tag(false).help("As list (⌘2)")
+                Image(systemName: "rectangle.split.3x1").tag(true).help("With the folders above shown as columns (⌘3)")
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .frame(width: 64)
         }
         .buttonStyle(.borderless)
         .padding(.horizontal, 12)
@@ -272,12 +289,96 @@ struct BrowseView: View {
                     Button("OK") { browse.dismissProblem() }.controlSize(.small)
                 }
             }
-            if visible.isEmpty && !browse.isLoading {
-                if browse.error == nil { emptyFolder } else { Spacer() }
-            } else {
-                table
+            HStack(spacing: 0) {
+                if showsColumns, !browse.parentColumns.isEmpty {
+                    parentColumns
+                    Divider()
+                }
+                if visible.isEmpty && !browse.isLoading {
+                    if browse.error == nil { emptyFolder } else { Spacer() }
+                } else {
+                    table
+                }
             }
         }
+    }
+
+    // MARK: Columns view
+
+    /// The folders above the one on screen, outermost on the left, each with the folder that leads down highlighted.
+    /// Clicking a folder opens it, and dragging items onto one moves them there.
+    private var parentColumns: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 0) {
+                ForEach(browse.parentColumns) { column in
+                    parentColumn(column)
+                    Divider()
+                }
+            }
+        }
+        .defaultScrollAnchor(.trailing)
+        .frame(width: min(CGFloat(browse.parentColumns.count) * (Self.columnWidth + 1), Self.widestStrip))
+    }
+
+    private func parentColumn(_ column: BrowseModel.ParentColumn) -> some View {
+        ScrollViewReader { proxy in
+            ScrollView {
+                if let entries = column.entries {
+                    LazyVStack(alignment: .leading, spacing: 0) {
+                        ForEach(RemoteEntry.sorted(showsHidden ? entries : entries.filter { !$0.isHidden })) { entry in
+                            parentRow(entry, in: column)
+                                .id(entry.name)
+                        }
+                    }
+                    .padding(4)
+                } else if let error = column.error {
+                    Text(error)
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                        .padding(10)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                } else {
+                    ProgressView().controlSize(.small).padding(14).frame(maxWidth: .infinity)
+                }
+            }
+            .onAppear { proxy.scrollTo(column.childName, anchor: .center) }
+            .onChange(of: column.childName) { proxy.scrollTo(column.childName, anchor: .center) }
+            .onChange(of: column.entries) { proxy.scrollTo(column.childName, anchor: .center) }
+        }
+        .frame(width: Self.columnWidth)
+    }
+
+    private func parentRow(_ entry: RemoteEntry, in column: BrowseModel.ParentColumn) -> some View {
+        let folderPath = RemotePath.appending(entry.name, to: column.path)
+        let leadsDown = entry.name == column.childName
+        return HStack(spacing: 6) {
+            Image(systemName: Self.icon(for: entry))
+                .foregroundStyle(entry.kind == .folder ? Color.accentColor : Color.secondary)
+                .frame(width: 16)
+            Text(entry.name).lineLimit(1).truncationMode(.middle)
+            Spacer(minLength: 0)
+            if entry.kind != .file {
+                Image(systemName: "chevron.right").font(.system(size: 9)).foregroundStyle(.tertiary)
+            }
+        }
+        .font(.system(size: 12))
+        .padding(.horizontal, 6)
+        .padding(.vertical, 3)
+        .background(
+            RoundedRectangle(cornerRadius: 5, style: .continuous)
+                .fill(leadsDown ? Color.accentColor.opacity(0.22) : (crumbTarget == folderPath ? Color.accentColor.opacity(0.12) : Color.clear))
+        )
+        .contentShape(Rectangle())
+        .onTapGesture { if entry.kind != .file { browse.go(to: folderPath) } }
+        .help(folderPath)
+        .dropDestination(for: String.self) { texts, _ in
+            guard entry.kind == .folder else { return false }
+            moveDropped(texts, toFolder: folderPath)
+            return !texts.isEmpty
+        } isTargeted: { targeted in
+            if targeted { crumbTarget = folderPath } else if crumbTarget == folderPath { crumbTarget = nil }
+        }
+        .dropDestination(for: URL.self) { urls, _ in drop(urls, into: entry.kind == .folder ? folderPath : column.path) }
     }
 
     private func banner<Trailing: View>(
@@ -444,6 +545,10 @@ struct BrowseView: View {
                 .disabled(selection.isEmpty)
             Button("New Folder") { startNewFolder() }
                 .keyboardShortcut("n", modifiers: [.command, .shift])
+            Button("As List") { showsColumns = false }
+                .keyboardShortcut("2", modifiers: .command)
+            Button("As Columns") { showsColumns = true }
+                .keyboardShortcut("3", modifiers: .command)
         }
         .opacity(0)
         .frame(width: 0, height: 0)
