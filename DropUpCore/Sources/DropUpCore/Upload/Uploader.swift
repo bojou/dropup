@@ -30,6 +30,10 @@ public protocol ServerSession: Sendable {
     /// Everything directly inside the folder `path`, hidden items included, folders first.
     func listEntries(atPath path: String) async throws -> [RemoteEntry]
 
+    /// Like `listEntries`, but a symbolic link is always reported as a link. Some FTP servers list a link to a folder as
+    /// a folder, so walking a tree with `listEntries` could lead out of it. The default is `listEntries`.
+    func listEntriesWithLinks(atPath path: String) async throws -> [RemoteEntry]
+
     /// Sends the file to `remotePath`, replacing anything already there.
     /// `progress` receives the total number of bytes sent so far. It is called with 0 as soon as the
     /// server has created or emptied `remotePath`, before any data is sent, so a caller can tell
@@ -67,6 +71,12 @@ public protocol ServerSession: Sendable {
 
     /// Logs out and closes the connection. Never throws.
     func close() async
+}
+
+extension ServerSession {
+    public func listEntriesWithLinks(atPath path: String) async throws -> [RemoteEntry] {
+        try await listEntries(atPath: path)
+    }
 }
 
 /// Opens sessions for one transfer protocol.

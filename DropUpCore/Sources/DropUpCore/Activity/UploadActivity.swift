@@ -41,8 +41,12 @@ public struct UploadActivity: Equatable, Sendable {
             UploadProgress(bytesSent: bytesSent, totalBytes: totalBytes).fraction
         }
 
-        /// Lower-case extension for the file badge, e.g. `PNG`. Empty when there is none.
+        /// A folder is sent as one item, named with a trailing `/`.
+        public var isFolder: Bool { fileName.hasSuffix("/") }
+
+        /// Lower-case extension for the file badge, e.g. `PNG`. Empty when there is none, and for a folder.
         public var badge: String {
+            guard !isFolder else { return "" }
             let ext = (fileName as NSString).pathExtension
             return String(ext.prefix(4)).uppercased()
         }

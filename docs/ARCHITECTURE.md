@@ -39,10 +39,12 @@ Testability does not come from the UI framework choice. It comes from keeping th
 
 1. Files are dropped on the icon. `AppModel.upload` opens onboarding if no valid config exists, otherwise calls `UploadQueue.enqueue`.
 2. The queue emits `.queued`, then processes files one at a time. For each it reads the current `ServerConfig` and the password from the `CredentialStore` at that moment, so Settings changes apply to the next file without a restart.
-3. It rejects folders and unreadable items (`.unsupportedItem`), a missing config (`.notConfigured`) or a missing password (`.missingPassword`) before touching the network.
+3. It rejects unreadable items (`.unsupportedItem`), a missing config (`.notConfigured`) or a missing password (`.missingPassword`) before touching the network.
 4. It asks the `UploaderFactory` for the right `Uploader` and calls `upload(_:progress:)`. Progress callbacks become `.progress` events.
 5. The outcome is `.succeeded(remotePath:)` or `.failed(UploadFailure)`. One failure never stops the rest of the queue.
 6. `AppModel` folds events into a single `Status` that drives the icon and its tooltip.
+
+A dropped folder is one job, named with a trailing `/`. `LocalTree.scan` lists everything inside it first (links and special files are skipped and counted, never followed; depth and item counts are capped), then the queue makes the folder on the server with the same numbering rule as files (`photos`, `photos-1`) and sends the files one by one, reporting one progress bar for the whole folder. If it fails or is cancelled, the files already sent stay on the server. Downloading a folder mirrors this: `RemoteTree.walk` lists the server side with `listEntriesWithLinks` (FTP asks `LIST` as well as `MLSD`, because `MLSD` on some servers reports a link to a folder as a folder), skips links and names that could reach outside the folder, and builds a new local folder that is removed again if anything fails.
 
 ## Credentials
 

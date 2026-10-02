@@ -5,7 +5,7 @@ public enum UploadFailure: Error, Equatable, Sendable {
     case notConfigured
     /// The Keychain has no password for the configured server.
     case missingPassword
-    /// The dropped item is missing, unreadable, or a folder.
+    /// The dropped item is missing or unreadable.
     case unsupportedItem
     /// The transfer failed; the message is suitable for display.
     case transfer(String)
@@ -16,7 +16,7 @@ extension UploadFailure {
         switch self {
         case .notConfigured: "Set up your server first."
         case .missingPassword: "No password saved for this server. Add it in Settings."
-        case .unsupportedItem: "Only files can be uploaded, not folders."
+        case .unsupportedItem: "DropUp can't read this item."
         case .transfer(let message): message
         }
     }
@@ -33,7 +33,11 @@ public enum UploadEvent: Sendable, Equatable {
     case cancelled(id: UUID)
 }
 
-/// Uploads dropped files one at a time and reports what happens on `events`.
+/// Uploads dropped files and folders one at a time and reports what happens on `events`.
+///
+/// A folder is one item in the queue: it is sent with everything inside it, as the same name on the server (numbered
+/// when that name is taken, unless the setting is to replace). Its name in the events ends with `/`.
+/// Symbolic links inside it are left out. A folder that is cancelled or fails halfway keeps the files already sent.
 ///
 /// The queue reads settings and credentials at the moment each upload starts,
 /// so edits made in Settings apply to the next file without restarting anything.
@@ -98,7 +102,13 @@ public actor UploadQueue {
         let jobs = fileURLs.map { Job(id: UUID(), fileURL: $0, remoteDirectory: remoteDirectory) }
         for job in jobs {
             pending.append(job)
-            continuation.yield(.queued(id: job.id, fileName: job.fileURL.lastPathComponent, totalBytes: size(of: job.fileURL)))
+            let name = job.fileURL.lastPathComponent
+            if isFolder(job.fileURL) {
+                let total = (try? LocalTree.scan(job.fileURL, fileManager: fileManager).totalBytes) ?? 0
+                continuation.yield(.queued(id: job.id, fileName: name + "/", totalBytes: total))
+            } else {
+                continuation.yield(.queued(id: job.id, fileName: name, totalBytes: size(of: job.fileURL)))
+            }
         }
         if worker == nil, !pending.isEmpty {
             worker = Task { await self.drain() }
@@ -181,9 +191,7 @@ public actor UploadQueue {
         guard let config = settings.loadServerConfig(), config.isValid else {
             throw UploadFailure.notConfigured
         }
-        var isDirectory: ObjCBool = false
-        guard fileManager.fileExists(atPath: job.fileURL.path, isDirectory: &isDirectory),
-              !isDirectory.boolValue,
+        guard fileManager.fileExists(atPath: job.fileURL.path),
               fileManager.isReadableFile(atPath: job.fileURL.path)
         else {
             throw UploadFailure.unsupportedItem
@@ -195,6 +203,9 @@ public actor UploadQueue {
         let session = try await session(for: config, password: password)
         // Only the target folder changes. The session is still matched on the saved config, so it is reused.
         let target = job.remoteDirectory.map(config.withRemoteDirectory) ?? config
+        if isFolder(job.fileURL) {
+            return try await transferFolder(job, to: target, config: config, password: password, session: session, written: written)
+        }
         let remotePath = try await RemoteFileName.resolve(
             fileName: job.fileURL.lastPathComponent,
             in: target,
@@ -213,6 +224,92 @@ public actor UploadQueue {
             }
         }
         return remotePath
+    }
+
+    /// Sends a folder and everything in it. Returns the folder's path on the server.
+    private func transferFolder(
+        _ job: Job,
+        to target: ServerConfig,
+        config: ServerConfig,
+        password: String,
+        session: any ServerSession,
+        written: WrittenFile
+    ) async throws -> String {
+        let tree: LocalTree
+        do {
+            tree = try LocalTree.scan(job.fileURL, fileManager: fileManager)
+        } catch let error as FileOperationError {
+            throw error
+        } catch {
+            throw UploadFailure.unsupportedItem
+        }
+
+        let parent = RemotePath.normalizedDirectory(target.remoteDirectory)
+        let name = job.fileURL.lastPathComponent
+        var finalName = name
+        if settings.loadPreferences().conflictPolicy == .keepBoth {
+            let taken = Set(try await session.listEntries(atPath: parent).map(\.name))
+            var index = 0
+            while taken.contains(finalName), index < 1000 {
+                index += 1
+                finalName = RemoteFileName.numberedFolder(name, index: index)
+            }
+        }
+        let root = Self.join(parent, finalName)
+        try await Self.ensureFolder(root, session: session)
+        for folder in tree.directories {
+            try await Self.wrapped(folder) { try await Self.ensureFolder(Self.join(root, folder), session: session) }
+        }
+
+        let total = tree.totalBytes
+        let throttle = ProgressThrottle(interval: progressInterval, total: total)
+        let continuation = self.continuation
+        let id = job.id
+        var sentBefore: Int64 = 0
+        for file in tree.files {
+            try Task.checkCancellation()
+            let remotePath = Self.join(root, file.relativePath)
+            written.willUpload(to: remotePath, on: config, password: password)
+            let base = sentBefore
+            try await Self.wrapped(file.relativePath) {
+                try await session.upload(fileURL: file.url, to: remotePath) { sent in
+                    written.serverHasFile()
+                    let overall = base + sent
+                    if sent > 0, throttle.shouldReport(overall) {
+                        continuation.yield(.progress(id: id, UploadProgress(bytesSent: overall, totalBytes: total)))
+                    }
+                }
+            }
+            sentBefore += file.size
+        }
+        return root
+    }
+
+    private static func join(_ folder: String, _ name: String) -> String {
+        folder == "/" ? "/" + name : folder + "/" + name
+    }
+
+    /// Makes the folder, accepting one that is already there (as when merging into an existing folder).
+    private static func ensureFolder(_ path: String, session: any ServerSession) async throws {
+        do {
+            try await session.makeDirectory(atPath: path)
+        } catch let error as UploaderError {
+            guard case .serverRejected = error, (try? await session.listEntries(atPath: path)) != nil else { throw error }
+        }
+    }
+
+    /// Names where in the folder a refusal happened, so the message says which file.
+    private static func wrapped<T>(_ path: String, _ body: () async throws -> T) async throws -> T {
+        do {
+            return try await body()
+        } catch let error as UploaderError {
+            throw FolderTransferError(path: path, reason: error.errorDescription ?? "\(error)")
+        }
+    }
+
+    private func isFolder(_ url: URL) -> Bool {
+        var isDirectory: ObjCBool = false
+        return fileManager.fileExists(atPath: url.path, isDirectory: &isDirectory) && isDirectory.boolValue
     }
 
     /// Reuses the open session when the server and password are unchanged.
@@ -271,8 +368,12 @@ final class WrittenFile: @unchecked Sendable {
     private var target: Leftover?
     private var created = false
 
+    /// Starts tracking a new file. A folder upload calls this once per file.
     func willUpload(to remotePath: String, on config: ServerConfig, password: String) {
-        lock.withLock { target = Leftover(remotePath: remotePath, config: config, password: password) }
+        lock.withLock {
+            target = Leftover(remotePath: remotePath, config: config, password: password)
+            created = false
+        }
     }
 
     /// The server reported progress, which `ServerSession.upload` does first with 0 once it has created the file.

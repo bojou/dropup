@@ -148,6 +148,31 @@ struct FTPSessionTests {
         #expect(server.commandLog.contains("LIST /drops"))
     }
 
+    @Test func aSecondLookWithLISTMarksFoldersThatAreReallyLinks() async throws {
+        let server = FakeFTPServer()
+        server.linkedFolders = ["archive"]
+        let session = try await connect(server)
+
+        // MLSD alone says "archive" is a folder, the way some servers do for a link to one.
+        #expect(try await session.listEntries(atPath: "/drops").first { $0.name == "archive" }?.kind == .folder)
+
+        let entries = try await session.listEntriesWithLinks(atPath: "/drops")
+
+        #expect(entries.first { $0.name == "archive" }?.kind == .link)
+        #expect(entries.first { $0.name == "My Photos" }?.kind == .folder)
+        #expect(entries.first { $0.name == "notes.txt" }?.kind == .file)
+    }
+
+    @Test func theSecondLookKeepsTheFirstAnswerWhenThereAreNoLinks() async throws {
+        let server = FakeFTPServer()
+        let session = try await connect(server)
+
+        let entries = try await session.listEntriesWithLinks(atPath: "/drops")
+
+        #expect(entries == (try await session.listEntries(atPath: "/drops")))
+        #expect(server.commandLog.filter { $0.hasPrefix("LIST") }.count >= 1)
+    }
+
     @Test func downloadsAFileInBinaryPassiveMode() async throws {
         let temp = try TempFiles()
         defer { temp.remove() }

@@ -55,7 +55,9 @@ final class DownloadModel {
 
     /// Fetches `entries`, which sit in the server folder `folder`, into `directory` on this Mac.
     func download(_ entries: [RemoteEntry], in folder: String, from browse: BrowseModel, to directory: URL) {
-        let files = entries.map { RemoteDownload(remotePath: RemotePath.appending($0.name, to: folder), size: $0.size) }
+        let files = entries.map {
+            RemoteDownload(remotePath: RemotePath.appending($0.name, to: folder), size: $0.size, isFolder: $0.kind == .folder)
+        }
         guard !files.isEmpty else { return }
         let config = browse.config
         let password = browse.password

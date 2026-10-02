@@ -322,7 +322,8 @@ struct RealServerTests {
     @Test(.enabled(if: RealServerTests.enabled))
     func sftpTrustsFirstHostKeyThenRejectsAChangedOne() async throws {
         let hostKeys = InMemoryHostKeyStore()
-        let sftp = config(.sftp)
+        // The root never changes while other tests create and delete files below it.
+        let sftp = config(.sftp, directory: "/")
         let browser = ServerBrowser(connectors: connectors(hostKeys: hostKeys))
 
         _ = try await browser.testConnection(sftp, password: "secret")
@@ -475,6 +476,78 @@ struct RealServerTests {
         // The connection is still good afterwards.
         let listing = try await browse.entries(atPath: scratch.path)
         #expect(listing.map(\.name) == ["exists"])
+    }
+
+    @Test(.enabled(if: RealServerTests.enabled), arguments: [TransferProtocol.ftp, .sftp])
+    func uploadsAWholeFolder(_ transferProtocol: TransferProtocol) async throws {
+        let scratch = try scratchFolder()
+        defer { try? FileManager.default.removeItem(atPath: scratch.disk) }
+        let local = FileManager.default.temporaryDirectory.appendingPathComponent("up-\(UUID().uuidString.prefix(8))")
+        defer { try? FileManager.default.removeItem(at: local) }
+        let tree = local.appendingPathComponent("Fotos – Größe")
+        var generator = SystemRandomNumberGenerator()
+        let big = Data((0..<1_500_000).map { _ in UInt8.random(in: 0...255, using: &generator) })
+        try FileManager.default.createDirectory(at: tree.appendingPathComponent("sub/deeper"), withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: tree.appendingPathComponent("empty"), withIntermediateDirectories: true)
+        try big.write(to: tree.appendingPathComponent("sub/big.bin"))
+        try Data("hej".utf8).write(to: tree.appendingPathComponent("a b.txt"))
+        try Data().write(to: tree.appendingPathComponent("sub/deeper/zero.txt"))
+        try Data("junk".utf8).write(to: tree.appendingPathComponent(".DS_Store"))
+        try FileManager.default.createSymbolicLink(at: tree.appendingPathComponent("link"), withDestinationURL: local)
+
+        let queue = makeQueue(config(transferProtocol))
+        let ids = await queue.enqueue([tree], toDirectory: scratch.path)
+        await queue.waitUntilIdle()
+        await queue.finish()
+        var events: [UploadEvent] = []
+        for await event in queue.events { events.append(event) }
+
+        #expect(events.contains(.succeeded(id: ids[0], remotePath: scratch.path + "/Fotos – Größe")))
+        let remote = "/ops/\(scratch.name)/Fotos – Größe"
+        #expect(serverFile(remote + "/sub/big.bin") == big)
+        #expect(serverFile(remote + "/a b.txt") == Data("hej".utf8))
+        #expect(serverFile(remote + "/sub/deeper/zero.txt") == Data())
+        #expect(FileManager.default.fileExists(atPath: Self.root! + remote + "/empty"))
+        #expect(serverFile(remote + "/.DS_Store") == nil)
+        #expect(!FileManager.default.fileExists(atPath: Self.root! + remote + "/link"))
+        let sent = events.compactMap { event -> Int64? in
+            if case .progress(_, let progress) = event { progress.bytesSent } else { nil }
+        }
+        #expect(sent == sent.sorted())
+        #expect(sent.last == Int64(big.count + 3))
+    }
+
+    @Test(.enabled(if: RealServerTests.enabled), arguments: [TransferProtocol.ftp, .sftp])
+    func downloadsAWholeFolderWithoutFollowingLinks(_ transferProtocol: TransferProtocol) async throws {
+        let scratch = try scratchFolder()
+        defer { try? FileManager.default.removeItem(atPath: scratch.disk) }
+        var generator = SystemRandomNumberGenerator()
+        let big = Data((0..<1_500_000).map { _ in UInt8.random(in: 0...255, using: &generator) })
+        try FileManager.default.createDirectory(atPath: scratch.disk + "/tree/sub", withIntermediateDirectories: true)
+        try big.write(to: URL(fileURLWithPath: scratch.disk + "/tree/sub/big.bin"))
+        try write("hej", to: scratch.disk + "/tree/a b.txt")
+        try FileManager.default.createDirectory(atPath: scratch.disk + "/tree/empty", withIntermediateDirectories: true)
+        try write("secret", to: scratch.disk + "/outside/secret.txt")
+        try FileManager.default.createSymbolicLink(atPath: scratch.disk + "/tree/shortcut", withDestinationPath: scratch.disk + "/outside")
+        let destination = FileManager.default.temporaryDirectory.appendingPathComponent("dl-\(UUID().uuidString.prefix(8))")
+        try FileManager.default.createDirectory(at: destination, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: destination) }
+
+        let queue = DownloadQueue(connectors: connectors(), progressInterval: 0)
+        await queue.enqueue([RemoteDownload(remotePath: scratch.path + "/tree", isFolder: true)], from: config(transferProtocol), password: "secret", into: destination)
+        await queue.waitUntilIdle()
+        await queue.finish()
+        var events: [DownloadEvent] = []
+        for await event in queue.events { events.append(event) }
+
+        #expect(!events.contains { if case .failed = $0 { true } else { false } })
+        let saved = destination.appendingPathComponent("tree")
+        #expect(FileManager.default.contents(atPath: saved.appendingPathComponent("sub/big.bin").path) == big)
+        #expect(FileManager.default.contents(atPath: saved.appendingPathComponent("a b.txt").path) == Data("hej".utf8))
+        var isFolder: ObjCBool = false
+        #expect(FileManager.default.fileExists(atPath: saved.appendingPathComponent("empty").path, isDirectory: &isFolder) && isFolder.boolValue)
+        // What the link points at is not copied along.
+        #expect(!FileManager.default.fileExists(atPath: saved.appendingPathComponent("shortcut").path))
     }
 
     private func queuedID(_ events: [UploadEvent]) -> UUID {
