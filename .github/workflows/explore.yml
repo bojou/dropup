@@ -5,78 +5,38 @@ on:
 jobs:
   explore:
     runs-on: macos-15
-    env:
-      GH_TOKEN: ${{ github.token }}
     steps:
       - uses: actions/checkout@v4
+      - run: brew install xcodegen
 
-      - name: Sparkle releases
-        run: |
-          gh api repos/sparkle-project/Sparkle/releases/latest --jq '{tag:.tag_name,published:.published_at,assets:[.assets[]|{name,size,digest}]}'
-
-      - name: Download the tools
-        run: |
-          TAG="$(gh api repos/sparkle-project/Sparkle/releases/latest --jq .tag_name)"
-          curl -fsSL -o sparkle.tar.xz "https://github.com/sparkle-project/Sparkle/releases/download/$TAG/Sparkle-$TAG.tar.xz"
-          shasum -a 256 sparkle.tar.xz
-          mkdir sparkle && tar -xf sparkle.tar.xz -C sparkle
-          ls -la sparkle sparkle/bin
-          for t in generate_keys sign_update generate_appcast; do echo "=== $t --help"; sparkle/bin/$t --help 2>&1 | head -60 || true; done
-
-      - name: Try the key flow with a throwaway key
+      - name: Variant A, embed true as committed
         run: |
           set +e
-          sparkle/bin/generate_keys 2>&1 | head -20
-          echo "=== -p"; sparkle/bin/generate_keys -p 2>&1 | head
-          echo "=== -x"; sparkle/bin/generate_keys -x "$RUNNER_TEMP/k" 2>&1 | head; wc -c "$RUNNER_TEMP/k"
-          head -c 100000 /dev/urandom > test.bin
-          echo "=== sign_update --ed-key-file file"; sparkle/bin/sign_update --ed-key-file "$RUNNER_TEMP/k" test.bin 2>&1 | head
-          echo "=== sign_update --ed-key-file - (stdin)"; printf '%s' "$(cat "$RUNNER_TEMP/k")" | sparkle/bin/sign_update --ed-key-file - test.bin 2>&1 | head
-          echo "=== sign_update -f file"; sparkle/bin/sign_update -f "$RUNNER_TEMP/k" test.bin 2>&1 | head
-          echo "=== sign_update --verify"; sparkle/bin/sign_update --verify 2>&1 | head -5
-
-      - name: Swift package artifacts layout
-        run: |
-          mkdir spm && cd spm
-          cat > Package.swift <<'PKG'
-          // swift-tools-version:5.9
-          import PackageDescription
-          let package = Package(
-              name: "x", platforms: [.macOS(.v14)],
-              dependencies: [.package(url: "https://github.com/sparkle-project/Sparkle", from: "2.6.0")],
-              targets: [.executableTarget(name: "x", dependencies: [.product(name: "Sparkle", package: "Sparkle")])]
-          )
-          PKG
-          mkdir -p Sources/x && echo 'import Sparkle; print("hi")' > Sources/x/main.swift
-          swift package resolve
-          cat Package.resolved | head -30
-          find .build/artifacts -maxdepth 5 | head -60
-
-      - name: Generate the project and build
-        run: |
-          brew install xcodegen
           xcodegen generate
-          grep -n "Embed\|Sparkle" DropUp.xcodeproj/project.pbxproj | head -30
-          xcodebuild -project DropUp.xcodeproj -scheme DropUp -configuration Release -destination 'platform=macOS' -derivedDataPath build CODE_SIGNING_ALLOWED=NO build 2>&1 | tail -15
-          cat DropUp.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved | head -30
-          ls build/Build/Products/Release/DropUp.app/Contents/Frameworks
-          find build/Build/Products/Release/DropUp.app/Contents/Frameworks/Sparkle.framework -maxdepth 4 | head -40
-          find build/SourcePackages/artifacts -maxdepth 4 | head -40
+          xcodebuild -project DropUp.xcodeproj -scheme DropUp -configuration Release -destination 'platform=macOS' -derivedDataPath buildA CODE_SIGNING_ALLOWED=NO build > a.log 2>&1
+          echo "exit $?"
+          grep -n "error:\|error \|Copy .*Sparkle\|cp: " a.log | head -20
+          ls buildA/Build/Products/Release/ | head
 
-      - name: Re-sign ad hoc inside out and try to launch
+      - name: Variant B, no embed key
         run: |
           set +e
-          cp -R build/Build/Products/Release/DropUp.app DropUp.app
-          FW=DropUp.app/Contents/Frameworks/Sparkle.framework
-          codesign -dv --verbose=2 "$FW" 2>&1 | head -12
-          for item in "$FW"/Versions/B/XPCServices/*.xpc "$FW/Versions/B/Autoupdate" "$FW/Versions/B/Updater.app"; do
-            ls -d "$item" && codesign --force --options runtime --sign - "$item"
-          done
-          codesign --force --options runtime --sign - "$FW"
-          codesign --force --options runtime --sign - DropUp.app
-          codesign --verify --deep --strict --verbose=2 DropUp.app
-          DropUp.app/Contents/MacOS/DropUp > launch.log 2>&1 &
-          PID=$!
-          sleep 8
-          if kill -0 $PID 2>/dev/null; then echo "still running after 8s (good)"; kill $PID; else echo "exited early"; fi
-          head -30 launch.log
+          sed -i '' '/embed: true/d' project.yml
+          grep -n -B1 -A1 "package: Sparkle" project.yml
+          xcodegen generate
+          grep -c "Sparkle in Embed Frameworks" DropUp.xcodeproj/project.pbxproj
+          xcodebuild -project DropUp.xcodeproj -scheme DropUp -configuration Release -destination 'platform=macOS' -derivedDataPath buildB CODE_SIGNING_ALLOWED=NO build > b.log 2>&1
+          echo "exit $?"
+          grep -n "error:\|error \|Copy .*Sparkle\|cp: " b.log | head -20
+          ls buildB/Build/Products/Release/ | head
+          ls buildB/Build/Products/Release/DropUp.app/Contents/Frameworks 2>&1 | head
+          otool -L buildB/Build/Products/Release/DropUp.app/Contents/MacOS/DropUp | grep -i "sparkle\|rpath"
+          otool -l buildB/Build/Products/Release/DropUp.app/Contents/MacOS/DropUp | grep -A2 LC_RPATH
+
+      - name: Variant C, debug build as CI does
+        run: |
+          set +e
+          xcodebuild -project DropUp.xcodeproj -scheme DropUp -destination 'platform=macOS' -derivedDataPath buildC CODE_SIGNING_ALLOWED=NO build > c.log 2>&1
+          echo "exit $?"
+          grep -n "error:\|error \|Copy .*Sparkle\|cp: " c.log | head -20
+          ls buildC/Build/Products/Debug/DropUp.app/Contents/Frameworks 2>&1 | head
