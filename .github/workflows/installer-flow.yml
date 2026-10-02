@@ -11,7 +11,11 @@ on:
 
 jobs:
   flow:
-    runs-on: macos-15
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-26]
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
@@ -33,12 +37,13 @@ jobs:
 
       - name: Mount, install, launch
         run: |
+          sw_vers
           DMG="$HOME/Downloads/DropUp-9.9.9.dmg"
           echo "attaching"
           perl -e 'alarm shift; exec @ARGV' 60 hdiutil attach "$DMG" || { echo "attach failed or timed out"; exit 1; }
           ls -la /Volumes/DropUp
-          echo "--- hdiutil info -plist"
-          hdiutil info -plist
+          echo "--- hdiutil info for the DropUp image"
+          hdiutil info | grep -B2 -A12 'DropUp-9.9.9' || true
           ditto /Volumes/DropUp/DropUp.app /Applications/DropUp.app
           log stream --level debug --predicate 'subsystem == "app.dropup.DropUp"' > "$RUNNER_TEMP/app.log" 2>&1 &
           sleep 3
@@ -47,8 +52,8 @@ jobs:
           sleep 15
           echo "--- DropUp process"
           pgrep -lf DropUp || echo "not running"
-          echo "--- app log"
-          cat "$RUNNER_TEMP/app.log"
+          echo "--- app log (DropUp image lines only)"
+          grep -v 'CoreSimulator\|AssetsV2' "$RUNNER_TEMP/app.log"
           echo "--- DropUp windows"
           cat > "$RUNNER_TEMP/windows.swift" <<'EOF'
           import CoreGraphics
@@ -60,8 +65,6 @@ jobs:
           EOF
           perl -e 'alarm shift; exec @ARGV' 90 swift "$RUNNER_TEMP/windows.swift" || echo "window list failed"
           perl -e 'alarm shift; exec @ARGV' 20 screencapture -x "$RUNNER_TEMP/shot.png" || echo "no screenshot"
-          echo "--- app log, again"
-          cat "$RUNNER_TEMP/app.log"
 
       - uses: actions/upload-artifact@v4
         if: always()
