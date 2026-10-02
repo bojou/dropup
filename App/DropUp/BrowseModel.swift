@@ -18,6 +18,17 @@ final class BrowseModel {
         var canCancel: Bool
     }
 
+    /// One of the folders above the one on screen, shown as a column in the Columns view.
+    struct ParentColumn: Identifiable, Equatable {
+        var path: String
+        /// The folder inside it that leads down to the folder on screen.
+        var childName: String
+        /// Nil while the listing is on its way.
+        var entries: [RemoteEntry]?
+        var error: String?
+        var id: String { path }
+    }
+
     /// Items that were cut or copied and wait for Paste. They stay where they are until pasted.
     struct Clipboard: Equatable {
         enum Mode { case cut, copy }
@@ -36,6 +47,8 @@ final class BrowseModel {
     private(set) var problem: String?
     private(set) var history: FolderHistory
     private(set) var operation: Operation?
+    /// The folders above the one on screen, outermost first. Only filled in while the Columns view is on.
+    private(set) var parentColumns: [ParentColumn] = []
     private(set) var clipboard: Clipboard?
     /// Names the window should select once the folder on screen has loaded (the folder just made, the item just renamed).
     var selectionRequest: Set<String>?
@@ -54,6 +67,11 @@ final class BrowseModel {
     /// What to do when a move or copy lands on a name that is taken. Read each time, so a change in Settings applies at once.
     @ObservationIgnored private let conflictPolicy: @MainActor () -> ConflictPolicy
     @ObservationIgnored private var task: Task<Void, Never>?
+    /// Listings of the folders above, kept so moving around doesn't list the same folders again and again.
+    @ObservationIgnored private var parentListings: [String: [RemoteEntry]] = [:]
+    @ObservationIgnored private var showsParents = false
+    /// Bumped for each round of parent listings, so a round that was overtaken stops after its current listing.
+    @ObservationIgnored private var parentRound = 0
     @ObservationIgnored private var operationTask: Task<Void, Never>?
 
     init(
@@ -91,6 +109,7 @@ final class BrowseModel {
     }
 
     func reload() {
+        parentListings.removeAll()
         load(path, as: .reload)
     }
 
@@ -129,6 +148,8 @@ final class BrowseModel {
 
     /// Stops any listing or change in flight and drops the connection. Call when the window closes.
     func close() {
+        showsParents = false
+        parentRound += 1
         task?.cancel()
         task = nil
         operationTask?.cancel()
@@ -163,6 +184,7 @@ final class BrowseModel {
                 path = target
                 entries = listing
                 isLoading = false
+                refreshParents()
             } catch is CancellationError {
                 // A newer listing replaced this one, and it owns the loading state.
             } catch {
@@ -171,6 +193,56 @@ final class BrowseModel {
                 self.error = ServerBrowser.message(for: error)
             }
         }
+    }
+
+    // MARK: Parent folders (Columns view)
+
+    /// Turns the parent columns on or off. While on, they follow the folder on screen.
+    func setShowsParents(_ shown: Bool) {
+        guard shown != showsParents else { return }
+        showsParents = shown
+        refreshParents()
+    }
+
+    /// Lays out one column for each folder above the one on screen, using what is already known, and lists the rest
+    /// from the nearest folder outwards. The folder on screen is listed first, so these never hold it up for long.
+    private func refreshParents() {
+        parentRound += 1
+        guard showsParents else {
+            parentColumns = []
+            return
+        }
+        let trail = RemotePath.trail(to: path)
+        let before = parentColumns
+        // A column that is being listed again keeps showing its old listing meanwhile, so it doesn't flicker.
+        parentColumns = trail.dropLast().enumerated().map { index, step in
+            let shown = parentListings[step.path] ?? before.first(where: { $0.path == step.path })?.entries
+            return ParentColumn(path: step.path, childName: trail[index + 1].name, entries: shown, error: nil)
+        }
+        let missing = parentColumns.map(\.path).filter { parentListings[$0] == nil }.reversed()
+        guard !missing.isEmpty else { return }
+        let round = parentRound
+        let session = session
+        Task {
+            for target in missing {
+                // Not cancelled, just abandoned: cancelling a listing in flight would drop the shared connection.
+                guard round == parentRound else { return }
+                do {
+                    let listing = try await session.entries(atPath: target)
+                    guard round == parentRound else { return }
+                    parentListings[target] = listing
+                    updateParent(target) { $0.entries = listing }
+                } catch {
+                    guard round == parentRound else { return }
+                    updateParent(target) { $0.error = ServerBrowser.message(for: error) }
+                }
+            }
+        }
+    }
+
+    private func updateParent(_ path: String, _ change: (inout ParentColumn) -> Void) {
+        guard let index = parentColumns.firstIndex(where: { $0.path == path }) else { return }
+        change(&parentColumns[index])
     }
 
     // MARK: Changing things
@@ -376,6 +448,7 @@ final class BrowseModel {
             }
             operation = nil
             operationTask = nil
+            parentListings.removeAll()
             if let shouldSelect, path == folder { selectionRequest = [shouldSelect] }
             // Show where an undo or redo happened, so the person sees what it did. Opening a folder clears the
             // message, so when there is one to read the window stays where it is.
