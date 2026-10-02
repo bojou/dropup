@@ -8,6 +8,7 @@ Both servers accept user "me" with password "secret" and share one root folder w
 `drops/` and `drops/archive/` pre-created. The tests read the same folder to check what arrived.
 """
 import asyncio
+import inspect
 import os
 import sys
 import tempfile
@@ -17,6 +18,23 @@ import asyncssh
 from pyftpdlib.authorizers import DummyAuthorizer
 from pyftpdlib.handlers import FTPHandler
 from pyftpdlib.servers import ThreadedFTPServer
+
+async def _lenient_rename(self, packet):
+    """Accept RENAME the way OpenSSH's sftp-server does: ignore bytes after the two paths.
+
+    Citadel (the SFTP client DropUp uses) appends a version 5 `flags` field to the version 3 request.
+    asyncssh refuses that ("Unexpected data at end of packet"); OpenSSH and most other servers ignore it.
+    """
+    oldpath = packet.get_string()
+    newpath = packet.get_string()
+    result = self._server.rename(oldpath, newpath)
+    if inspect.isawaitable(result):
+        await result
+
+
+# asyncssh looks handlers up in a table built when the class was defined, so replace the entry too.
+asyncssh.sftp.SFTPServerHandler._process_rename = _lenient_rename
+asyncssh.sftp.SFTPServerHandler._packet_handlers[asyncssh.sftp.FXP_RENAME] = _lenient_rename
 
 USER, PASSWORD = "me", "secret"
 FTP_PORT = int(os.environ.get("DROPUP_IT_FTP_PORT", "2121"))

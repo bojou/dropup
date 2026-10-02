@@ -22,7 +22,8 @@ To have DropUp start when you log in, turn on **Open at login** in Settings → 
 - The icon shows progress while uploading, a brief check when done, and a red dot if something failed.
 - Click the icon for the list of uploads: progress, speed, cancel, retry and recent uploads. Cancelling a running upload also deletes the half-sent file from the server.
 - To send files to another folder on the same server, click the icon and choose **Change Folder** at the bottom of the popover. The new folder applies from the next upload.
-- To look around the whole server, click the icon and choose **Browse**. The window lists every folder and file with size and date. Drop files onto it to upload them into the folder you are looking at. Select files and click **Download** to save them to your Downloads folder, or **Download To…** to pick a folder. Double-clicking a file downloads it too.
+- To look around the whole server, click the icon and choose **Browse**. The window lists every folder and file with size and date. Use the back and forward arrows (or the path bar) to move around like in Finder, and click a column heading to sort. Drop files onto it, or onto one of its folders, to upload them. Select one or more files and right-click (or two-finger tap) for **Download** and **Download To…**; double-clicking a file downloads it too.
+- In the same window you can make a **New Folder**, **Rename** (Return), **Delete** (with a confirmation; folders go with everything inside them), and move things: drag them onto a folder or onto a step of the path bar, or choose **Cut**, open the destination and **Paste**, or use **Move To…**. DropUp never replaces an item that is already there.
 - Server, credentials and upload folder are set in onboarding and editable in Settings → Connection. Passwords live in the macOS Keychain. An optional display name there (like "My website") is shown in the popover in place of the host.
 
 ## Status

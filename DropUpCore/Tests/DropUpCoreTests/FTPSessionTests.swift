@@ -313,3 +313,70 @@ final class Locked<Value>: @unchecked Sendable {
     var value: Value { lock.withLock { _value } }
     func mutate(_ body: (inout Value) -> Void) { lock.withLock { body(&_value) } }
 }
+
+struct FTPFileOperationTests {
+    private func connect(_ server: FakeFTPServer) async throws -> any ServerSession {
+        let config = ServerConfig(transferProtocol: .ftp, host: "ftp.example.com", username: "me", remoteDirectory: "/drops")
+        return try await FTPConnector(opener: server, replyTimeout: 2).connect(to: config, password: "secret")
+    }
+
+    @Test func makesAndRemovesAFolder() async throws {
+        let server = FakeFTPServer()
+        let session = try await connect(server)
+
+        try await session.makeDirectory(atPath: "/drops/new folder")
+        #expect(server.folders["/drops/new folder"] == [])
+        #expect(server.folders["/drops"]?.contains("new folder") == true)
+
+        try await session.removeDirectory(atPath: "/drops/new folder")
+        #expect(server.folders["/drops/new folder"] == nil)
+        #expect(server.commandLog.suffix(2) == ["MKD /drops/new folder", "RMD /drops/new folder"])
+    }
+
+    @Test func makingAFolderThatExistsOrRemovingAMissingOneIsRejected() async throws {
+        let server = FakeFTPServer()
+        let session = try await connect(server)
+        await #expect(throws: UploaderError.serverRejected(code: 550, message: "File exists")) {
+            try await session.makeDirectory(atPath: "/drops/archive")
+        }
+        await #expect(throws: UploaderError.serverRejected(code: 550, message: "No such folder")) {
+            try await session.removeDirectory(atPath: "/drops/missing")
+        }
+    }
+
+    @Test func renamesWithRNFRThenRNTO() async throws {
+        let server = FakeFTPServer()
+        server.seed("/drops/a.txt", "hello")
+        let session = try await connect(server)
+
+        try await session.rename(from: "/drops/a.txt", to: "/drops/archive/b.txt")
+
+        #expect(server.file("/drops/a.txt") == nil)
+        #expect(server.file("/drops/archive/b.txt") == Data("hello".utf8))
+        #expect(server.commandLog.suffix(2) == ["RNFR /drops/a.txt", "RNTO /drops/archive/b.txt"])
+    }
+
+    @Test func aMissingSourceStopsAtRNFR() async throws {
+        let server = FakeFTPServer()
+        let session = try await connect(server)
+        await #expect(throws: UploaderError.serverRejected(code: 550, message: "No such file or folder")) {
+            try await session.rename(from: "/drops/missing.txt", to: "/drops/b.txt")
+        }
+        #expect(!server.commandLog.contains { $0.hasPrefix("RNTO") })
+    }
+
+    @Test func namesThatCouldInjectCommandsAreRefused() async throws {
+        let server = FakeFTPServer()
+        let session = try await connect(server)
+        await #expect(throws: UploaderError.invalidRemotePath) {
+            try await session.rename(from: "/drops/a", to: "/drops/b\r\nDELE x")
+        }
+        await #expect(throws: UploaderError.invalidRemotePath) {
+            try await session.makeDirectory(atPath: "/drops/b\r\nDELE x")
+        }
+        await #expect(throws: UploaderError.invalidRemotePath) {
+            try await session.removeDirectory(atPath: "/drops/b\r\nDELE x")
+        }
+        #expect(!server.commandLog.contains { $0.hasPrefix("DELE") || $0.hasPrefix("RNFR") || $0.hasPrefix("MKD") })
+    }
+}

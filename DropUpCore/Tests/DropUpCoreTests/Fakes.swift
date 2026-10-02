@@ -149,6 +149,10 @@ final class FakeSession: ServerSession, @unchecked Sendable {
         }
     }
 
+    func makeDirectory(atPath path: String) async throws {}
+    func removeDirectory(atPath path: String) async throws {}
+    func rename(from oldPath: String, to newPath: String) async throws {}
+
     private static func hang() async throws {
         while true {
             try await Task.sleep(nanoseconds: 1_000_000)

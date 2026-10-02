@@ -41,8 +41,19 @@ public protocol ServerSession: Sendable {
         progress: @escaping @Sendable (Int64) -> Void
     ) async throws
 
-    /// Deletes the file at `remotePath`.
+    /// Deletes the file at `remotePath`. A symbolic link is removed itself, whatever it points to.
+    /// A folder is refused, so a caller can use this to tell a link to a folder from a real folder.
     func deleteFile(atPath remotePath: String) async throws
+
+    /// Creates the folder `path` inside an existing folder. Fails if something is already there.
+    func makeDirectory(atPath path: String) async throws
+
+    /// Removes the empty folder `path`.
+    func removeDirectory(atPath path: String) async throws
+
+    /// Renames or moves the file or folder at `oldPath` to `newPath`, on the same server.
+    /// Some servers silently replace a file already at `newPath`, so callers check first.
+    func rename(from oldPath: String, to newPath: String) async throws
 
     /// Copies the file at `remotePath` to `fileURL`, replacing anything already there.
     /// `progress` receives the total number of bytes received so far.

@@ -25,6 +25,7 @@ final class FakeFTPServer: ByteStreamOpener, @unchecked Sendable {
     private var user: String?
     private var dataStream: FakeDataStream?
     private var storingPath: String?
+    private var renamingFrom: String?
 
     // MARK: ByteStreamOpener
 
@@ -137,6 +138,35 @@ final class FakeFTPServer: ByteStreamOpener, @unchecked Sendable {
             return "226 Transfer complete"
         case "DELE":
             return files.removeValue(forKey: argument) != nil ? "250 Deleted" : "550 No such file"
+        case "MKD":
+            let parent = Self.parent(of: argument)
+            guard folderExists(parent) else { return "550 No such folder" }
+            guard !folderExists(argument), files[argument] == nil else { return "550 File exists" }
+            folders[argument] = []
+            folders[parent, default: []].append(Self.name(of: argument))
+            return "257 \"\(argument)\" created"
+        case "RMD":
+            guard folderExists(argument) else { return "550 No such folder" }
+            guard (folders[argument] ?? []).isEmpty, !files.keys.contains(where: { $0.hasPrefix(argument + "/") }) else { return "550 Directory not empty" }
+            folders[argument] = nil
+            folders[Self.parent(of: argument)]?.removeAll { $0 == Self.name(of: argument) }
+            return "250 Removed"
+        case "RNFR":
+            guard files[argument] != nil || folderExists(argument) else { return "550 No such file or folder" }
+            renamingFrom = argument
+            return "350 Ready for RNTO"
+        case "RNTO":
+            guard let from = renamingFrom else { return "503 RNFR first" }
+            renamingFrom = nil
+            guard folderExists(Self.parent(of: argument)) else { return "550 No such folder" }
+            if let contents = files.removeValue(forKey: from) {
+                files[argument] = contents
+            } else {
+                folders[argument] = folders.removeValue(forKey: from) ?? []
+                folders[Self.parent(of: from)]?.removeAll { $0 == Self.name(of: from) }
+                folders[Self.parent(of: argument), default: []].append(Self.name(of: argument))
+            }
+            return "250 Renamed"
         case "MLSD", "LIST":
             if verb == "MLSD", !supportsMLSD { return "500 MLSD not understood" }
             guard let dataStream else { return "425 Use PASV first" }
@@ -149,6 +179,19 @@ final class FakeFTPServer: ByteStreamOpener, @unchecked Sendable {
         default:
             return "502 Not implemented"
         }
+    }
+
+    private func folderExists(_ path: String) -> Bool {
+        path == "/" || folders[path] != nil || folders[Self.parent(of: path)]?.contains(Self.name(of: path)) == true
+    }
+
+    private static func parent(of path: String) -> String {
+        guard let slash = path.lastIndex(of: "/"), slash != path.startIndex else { return "/" }
+        return String(path[..<slash])
+    }
+
+    private static func name(of path: String) -> String {
+        String(path[path.index(after: path.lastIndex(of: "/") ?? path.startIndex)...])
     }
 
     private func listing(_ subfolders: [String], machineReadable: Bool) -> String {
