@@ -17,7 +17,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         let statusItem = StatusItemController(
             model: model,
             onOpenSettings: { [weak self] in self?.windows.showSettings() },
-            onOpenBrowse: { [weak self] in self?.windows.showBrowse() }
+            onOpenBrowse: { [weak self] in self?.windows.showBrowse() },
+            onChooseFolder: { [weak self] in self?.windows.showChooseFolder() }
         )
         self.statusItem = statusItem
         let dropPanel = DropPanelController(model: model, statusItem: statusItem)

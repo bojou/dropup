@@ -1,7 +1,7 @@
 import SwiftUI
 import DropUpCore
 
-/// Sizes shared by both pages of the popover, so its width and spacing are set in one place.
+/// Sizes of the popover, so its width and spacing are set in one place.
 enum PopoverLayout {
     static let width: CGFloat = 380
     static let padding: CGFloat = 14
@@ -17,17 +17,10 @@ struct PopoverView: View {
     let model: AppModel
     let openSettings: () -> Void
     let openBrowse: () -> Void
+    let openChooseFolder: () -> Void
     @State private var isDropTargeted = false
 
     var body: some View {
-        if model.isChoosingFolder {
-            PopoverFolderChooser(model: model)
-        } else {
-            uploads
-        }
-    }
-
-    private var uploads: some View {
         let activity = model.activity
         return VStack(spacing: PopoverLayout.spacing) {
             header
@@ -180,7 +173,7 @@ struct PopoverView: View {
     private var footer: some View {
         HStack(spacing: PopoverLayout.spacing) {
             if model.config != nil {
-                FooterTile(title: "Change Folder", symbol: "folder") { model.isChoosingFolder = true }
+                FooterTile(title: "Change Folder", symbol: "folder", action: openChooseFolder)
                 FooterTile(title: "Browse", symbol: "server.rack", action: openBrowse)
             }
             FooterTile(title: "Quit DropUp", symbol: "power", isQuit: true) { NSApp.terminate(nil) }

@@ -11,15 +11,22 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
     private let model: AppModel
     private let onOpenSettings: () -> Void
     private let onOpenBrowse: () -> Void
+    private let onChooseFolder: () -> Void
     private let popover = NSPopover()
     private let badge = CALayer()
     private var clickAwayMonitor: Any?
     private var escapeMonitor: Any?
 
-    init(model: AppModel, onOpenSettings: @escaping () -> Void, onOpenBrowse: @escaping () -> Void) {
+    init(
+        model: AppModel,
+        onOpenSettings: @escaping () -> Void,
+        onOpenBrowse: @escaping () -> Void,
+        onChooseFolder: @escaping () -> Void
+    ) {
         self.model = model
         self.onOpenSettings = onOpenSettings
         self.onOpenBrowse = onOpenBrowse
+        self.onChooseFolder = onChooseFolder
         super.init()
 
         if let button = statusItem.button {
@@ -45,7 +52,8 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
         let content = PopoverView(
             model: model,
             openSettings: { [weak self] in self?.openSettings() },
-            openBrowse: { [weak self] in self?.openBrowse() }
+            openBrowse: { [weak self] in self?.openBrowse() },
+            openChooseFolder: { [weak self] in self?.openChooseFolder() }
         )
         let controller = NSHostingController(rootView: content)
         controller.sizingOptions = [.preferredContentSize]
@@ -168,6 +176,11 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
     private func openBrowse() {
         popover.performClose(nil)
         onOpenBrowse()
+    }
+
+    private func openChooseFolder() {
+        popover.performClose(nil)
+        onChooseFolder()
     }
 
     func popoverDidClose(_ notification: Notification) {

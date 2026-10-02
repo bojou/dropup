@@ -27,8 +27,6 @@ final class AppModel {
     var panelState: DropPanelState = .hidden
     /// A file is being dragged over the menubar icon itself.
     var isDragOverIcon = false
-    /// The popover is showing its folder page instead of the upload list.
-    var isChoosingFolder = false
     @ObservationIgnored var isPopoverShown = false
     @ObservationIgnored var onNeedsOnboarding: (() -> Void)?
 
@@ -130,15 +128,14 @@ final class AppModel {
 
     func popoverVisibilityChanged(_ shown: Bool) {
         isPopoverShown = shown
-        // Each time the popover opens it starts on the upload list.
-        isChoosingFolder = false
         if shown { activity.markFailuresSeen() }
     }
 
     // MARK: Browsing
 
     /// The model behind a Browse window for the saved server, or nil before setup. It starts in the upload folder.
-    func makeBrowseModel() -> BrowseModel? {
+    /// With `.chooseFolder` it is the window for picking another upload folder, which changes nothing on the server.
+    func makeBrowseModel(purpose: BrowseModel.Purpose = .browse) -> BrowseModel? {
         guard let config else { return nil }
         let password = password(for: config)
         let session = BrowseSession(connectors: connectors, config: config, password: password)
@@ -146,6 +143,7 @@ final class AppModel {
             config: config,
             password: password,
             session: session,
+            purpose: purpose,
             conflictPolicy: { [weak self] in self?.preferences.conflictPolicy ?? .keepBoth }
         )
     }
