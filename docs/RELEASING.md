@@ -66,10 +66,6 @@ Mac to see why; the submission id is in the workflow log.
 
 ## Installing a release
 
-Download `DropUp-<version>.dmg` from the Releases page, open it, and double-click **DropUp**. It offers to install
-itself into **Applications**, opens from there, and asks whether to eject the disk image and trash the download.
-(Dragging **DropUp** into **Applications** also works; the same question comes the first time you start it.) It
-lives in the menubar, and shows in the Dock only while its setup or Settings window is open.
-
-The **Installer flow** workflow (Actions tab, run by hand) checks both ways of installing on macOS 15 and 26 with a
-release-style DMG. Run it after changing `SelfInstall.swift` or `InstallerCleanup.swift`.
+Download `DropUp-<version>.dmg` from the Releases page, open it, and drag **DropUp** into **Applications**. Ejecting the
+disk image and deleting the download is left to the person installing. DropUp lives in the menubar, and shows in the Dock
+only while its setup or Settings window is open.
