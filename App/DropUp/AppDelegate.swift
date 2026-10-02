@@ -18,8 +18,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         self.dropPanel = dropPanel
 
         model.onNeedsOnboarding = { [weak self] in self?.windows.showOnboarding() }
-        if model.needsOnboarding {
-            windows.showOnboarding()
+        Task { @MainActor in
+            // First thing after installing: tidy up the mounted DMG, then start setup.
+            await InstallerCleanup.offerIfNeeded()
+            if model.needsOnboarding {
+                windows.showOnboarding()
+            }
         }
     }
 
