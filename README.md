@@ -7,8 +7,8 @@ It is a pared-down take on the upload action in Dropzone 4: one destination, no 
 ## Install
 
 1. Download `DropUp-<version>.dmg` from the [Releases page](../../releases).
-2. Open the DMG and drag **DropUp** into **Applications**.
-3. Start DropUp from Applications. If the disk image is still mounted, it first offers to eject it and move the downloaded DMG to the Trash. DropUp lives in the menubar and walks you through setting up your server the first time. While its setup or Settings window is open it also shows in the Dock; closing the window removes the Dock icon and DropUp stays in the menubar.
+2. Open the DMG and double-click **DropUp**. It offers to install itself into **Applications**, opens from there, and asks whether to eject the disk image and move the downloaded DMG to the Trash. (Dragging **DropUp** into **Applications** works too; the same question then comes the first time you start it, if the disk image is still mounted.)
+3. DropUp lives in the menubar and walks you through setting up your server the first time. While its setup or Settings window is open it also shows in the Dock; closing the window removes the Dock icon and DropUp stays in the menubar.
 
 Releases are signed with a Developer ID and notarized by Apple, so macOS opens them without a warning. A release marked
 *pre-release* was built without the signing secrets: right-click DropUp and choose **Open** the first time. How releases

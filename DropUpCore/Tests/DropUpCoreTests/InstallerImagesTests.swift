@@ -102,4 +102,12 @@ struct InstallerImagesTests {
         let newer = MountedImage(imageURL: URL(fileURLWithPath: "/Users/me/Downloads/DropUp-0.2.0.dmg"), mountPoints: dropUpImage.mountPoints)
         #expect(candidate([newer], dismissed: dismissed) == newer)
     }
+
+    @Test func findsTheImageTheAppRunsFrom() {
+        let fromImage = URL(fileURLWithPath: "/Volumes/DropUp/DropUp.app")
+        #expect(InstallerImages.image(holding: fromImage, in: [dropUpImage]) == dropUpImage)
+        #expect(InstallerImages.image(holding: URL(fileURLWithPath: "/Applications/DropUp.app"), in: [dropUpImage]) == nil)
+        // A sibling volume whose name starts the same is not the same volume.
+        #expect(InstallerImages.image(holding: URL(fileURLWithPath: "/Volumes/DropUp 1/DropUp.app"), in: [dropUpImage]) == nil)
+    }
 }

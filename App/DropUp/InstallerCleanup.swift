@@ -1,5 +1,6 @@
 import AppKit
 import DropUpCore
+import os
 
 /// After installing from the DMG, offers to eject the disk image that is still mounted and move the
 /// downloaded `.dmg` to the Trash. Asked when DropUp starts from somewhere other than the image, and
@@ -7,16 +8,25 @@ import DropUpCore
 @MainActor
 enum InstallerCleanup {
     private static let keptKey = "keptInstallerImages"
+    private static let log = Logger(subsystem: "app.dropup.DropUp", category: "installer")
 
     static func offerIfNeeded() async {
         let images = (try? await withTimeout(seconds: 3) { await DiskImages.mounted() }) ?? []
         let kept = Set(UserDefaults.standard.stringArray(forKey: keptKey) ?? [])
+        log.notice("running from \(Bundle.main.bundleURL.path, privacy: .public); \(images.count) mounted image(s); \(kept.count) kept")
+        for image in images {
+            log.notice("image \(image.imageURL.path, privacy: .public) at \(image.mountPoints.map(\.path).joined(separator: ", "), privacy: .public)")
+        }
         guard let installer = InstallerImages.cleanupCandidate(
             in: images,
             runningAppURL: Bundle.main.bundleURL,
             dismissed: kept,
             holdsApp: { FileManager.default.fileExists(atPath: $0.appendingPathComponent("DropUp.app").path) }
-        ) else { return }
+        ) else {
+            log.notice("no installer to clean up")
+            return
+        }
+        log.notice("offering to eject \(installer.imageURL.path, privacy: .public)")
 
         let dmgStillThere = FileManager.default.fileExists(atPath: installer.imageURL.path)
         let volumeName = installer.mountPoints.first?.lastPathComponent ?? "DropUp"
@@ -30,7 +40,7 @@ enum InstallerCleanup {
         alert.addButton(withTitle: dmgStillThere ? "Eject and Move to Trash" : "Eject")
         alert.addButton(withTitle: "Keep")
 
-        guard alert.runModal() == .alertFirstButtonReturn else {
+        guard AutoConfirm.confirms(alert) else {
             UserDefaults.standard.set(Array(kept.union([installer.imageURL.path])), forKey: keptKey)
             return
         }
@@ -51,6 +61,8 @@ enum InstallerCleanup {
     }
 
     private static func showFailure(_ message: String) {
+        log.error("\(message, privacy: .public)")
+        guard !AutoConfirm.isOn else { return }
         let alert = NSAlert()
         alert.alertStyle = .warning
         alert.messageText = "Couldn’t finish cleaning up"
