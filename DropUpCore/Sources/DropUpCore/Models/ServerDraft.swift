@@ -9,6 +9,8 @@ public struct ServerDraft: Equatable, Sendable {
     public var username = ""
     public var password = ""
     public var remoteDirectory = "/"
+    /// Optional; empty means none.
+    public var displayName = ""
     /// Problems are only shown after the first attempt to continue or save.
     public var showProblems = false
 
@@ -21,6 +23,7 @@ public struct ServerDraft: Equatable, Sendable {
         username = config.username
         self.password = password
         remoteDirectory = config.remoteDirectory
+        displayName = config.displayName ?? ""
     }
 
     /// Switches protocol and moves the port along with it, unless the user typed a custom port.
@@ -37,7 +40,9 @@ public struct ServerDraft: Equatable, Sendable {
             host: host.trimmingCharacters(in: .whitespaces),
             port: Int(port.trimmingCharacters(in: .whitespaces)) ?? 0,
             username: username.trimmingCharacters(in: .whitespaces),
-            remoteDirectory: RemotePath.normalizedDirectory(remoteDirectory)
+            remoteDirectory: RemotePath.normalizedDirectory(remoteDirectory),
+            displayName: displayName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                ? nil : displayName.trimmingCharacters(in: .whitespacesAndNewlines)
         )
     }
 

@@ -62,13 +62,6 @@ struct PopoverView: View {
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
                     .truncationMode(.middle)
-                if model.config != nil {
-                    Button("Change folder") { model.isChoosingFolder = true }
-                        .buttonStyle(.plain)
-                        .font(.system(size: 11))
-                        .foregroundStyle(Color.accentColor)
-                        .accessibilityLabel("Change upload folder")
-                }
             }
             Spacer(minLength: 0)
             Button(action: openSettings) {
@@ -154,16 +147,45 @@ struct PopoverView: View {
         }
     }
 
+    /// One row while the buttons fit the popover's width, two rows when there are too many. A Browse FTP button
+    /// is planned next to Change Folder; add it to `folderButtons` and the layout makes room.
     private func footer(_ activity: UploadActivity) -> some View {
-        HStack {
-            if activity.isBusy {
-                FooterButton(title: "Cancel All") { model.cancelAll() }
-            } else if !activity.items.isEmpty {
-                FooterButton(title: "Clear Recent") { model.clearFinished() }
+        ViewThatFits(in: .horizontal) {
+            HStack {
+                folderButtons
+                queueButtons(activity)
+                Spacer()
+                quitButton
             }
-            Spacer()
-            FooterButton(title: "Quit DropUp") { NSApp.terminate(nil) }
+            VStack(alignment: .leading, spacing: 0) {
+                HStack { folderButtons; Spacer() }
+                HStack {
+                    queueButtons(activity)
+                    Spacer()
+                    quitButton
+                }
+            }
         }
+    }
+
+    @ViewBuilder
+    private var folderButtons: some View {
+        if model.config != nil {
+            FooterButton(title: "Change Folder") { model.isChoosingFolder = true }
+        }
+    }
+
+    @ViewBuilder
+    private func queueButtons(_ activity: UploadActivity) -> some View {
+        if activity.isBusy {
+            FooterButton(title: "Cancel All") { model.cancelAll() }
+        } else if !activity.items.isEmpty {
+            FooterButton(title: "Clear Recent") { model.clearFinished() }
+        }
+    }
+
+    private var quitButton: some View {
+        FooterButton(title: "Quit DropUp") { NSApp.terminate(nil) }
     }
 }
 

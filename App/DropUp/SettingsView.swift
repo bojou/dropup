@@ -65,6 +65,7 @@ private struct ConnectionSettings: View {
                         .labelsHidden()
                         .frame(width: 170)
                     }
+                    FormField("Display name (optional)", text: $draft.displayName, prompt: "My website")
                     HStack(alignment: .top, spacing: 12) {
                         FormField("Host", text: $draft.host, prompt: "files.example.com")
                         FormField("Port", text: $draft.port).frame(width: 96)
