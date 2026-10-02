@@ -139,6 +139,14 @@ final class AppModel {
         upload([url], toDirectory: directory)
     }
 
+    /// Takes one finished upload out of the Recent list.
+    func dismiss(_ id: UUID) {
+        activity.dismiss(id)
+        forgetUnusedSources()
+        persistRecent()
+        scheduleRecentExpiry()
+    }
+
     func clearFinished() {
         activity.clearFinished()
         forgetUnusedSources()

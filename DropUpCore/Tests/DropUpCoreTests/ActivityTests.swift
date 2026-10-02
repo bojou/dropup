@@ -137,6 +137,44 @@ struct UploadActivityTests {
         }
     }
 
+    @Test func oneFinishedUploadCanBeDismissedByItself() {
+        var activity = UploadActivity()
+        let a = queue(&activity, "a", bytes: 1, at: t0)
+        activity.apply(.succeeded(id: a, remotePath: "/a"), now: t0)
+        let b = queue(&activity, "b", bytes: 1, at: t0.addingTimeInterval(1))
+        activity.apply(.failed(id: b, .unsupportedItem), now: t0.addingTimeInterval(1))
+        let c = queue(&activity, "c", bytes: 1, at: t0.addingTimeInterval(2))
+        activity.apply(.cancelled(id: c), now: t0.addingTimeInterval(2))
+        #expect(activity.items.map(\.fileName) == ["c", "b", "a"])
+
+        activity.dismiss(b)
+        #expect(activity.items.map(\.fileName) == ["c", "a"])
+        activity.dismiss(UUID())
+        #expect(activity.items.count == 2)
+        activity.dismiss(a)
+        activity.dismiss(c)
+        #expect(activity.items.isEmpty)
+    }
+
+    @Test func nothingIsDismissedWhileABatchRuns() throws {
+        var activity = UploadActivity()
+        let done = queue(&activity, "done", bytes: 1, at: t0)
+        let running = queue(&activity, "running", bytes: 1, at: t0)
+        activity.apply(.started(id: running), now: t0)
+        activity.apply(.succeeded(id: done, remotePath: "/done"), now: t0)
+        let finished = try #require(activity.items.first { $0.id == done })
+        let active = try #require(activity.items.first { $0.id == running })
+        #expect(!activity.canDismiss(finished))
+        #expect(!activity.canDismiss(active))
+        activity.dismiss(done)
+        activity.dismiss(running)
+        #expect(activity.items.count == 2)
+
+        activity.apply(.succeeded(id: running, remotePath: "/running"), now: t0.addingTimeInterval(1))
+        let both = activity.items
+        #expect(both.allSatisfy(activity.canDismiss))
+    }
+
     @Test func measuresSpeedOverASlidingWindow() {
         var activity = UploadActivity()
         let id = queue(&activity, "big", bytes: 10_000, at: t0)

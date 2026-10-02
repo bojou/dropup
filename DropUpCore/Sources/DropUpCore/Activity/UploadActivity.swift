@@ -177,6 +177,18 @@ public struct UploadActivity: Equatable, Sendable {
         hasUnseenFailure = false
     }
 
+    /// Whether `item` can be taken out of the list by itself: it is finished, and no batch is running. During a batch
+    /// the finished items are still being counted and summed up, so they stay until it is done.
+    public func canDismiss(_ item: Item) -> Bool {
+        !isBusy && item.state.isFinished
+    }
+
+    /// Takes one finished upload out of the list. Does nothing for an upload that isn't finished or while a batch runs.
+    public mutating func dismiss(_ id: UUID) {
+        guard let item = items.first(where: { $0.id == id }), canDismiss(item) else { return }
+        remove(id)
+    }
+
     public mutating func remove(_ id: UUID) {
         items.removeAll { $0.id == id }
         batchIDs.remove(id)
