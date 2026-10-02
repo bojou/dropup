@@ -47,6 +47,7 @@ public actor UploadQueue {
     private let connectors: any ConnectorFactory
     private let fileManager: FileManager
     private let progressInterval: TimeInterval
+    private let cleanupTimeout: Double
 
     private struct Job {
         let id: UUID
@@ -65,20 +66,24 @@ public actor UploadQueue {
     private var cancelledIDs: Set<UUID> = []
     private var openSession: OpenSession?
 
-    /// - Parameter progressInterval: minimum seconds between `.progress` events per file.
-    ///   The final progress event of a file is always sent.
+    /// - Parameters:
+    ///   - progressInterval: minimum seconds between `.progress` events per file.
+    ///     The final progress event of a file is always sent.
+    ///   - cleanupTimeout: seconds to spend deleting the half-sent file after a cancel before giving up.
     public init(
         settings: any SettingsStore,
         credentials: any CredentialStore,
         connectors: any ConnectorFactory,
         fileManager: FileManager = .default,
-        progressInterval: TimeInterval = 0.1
+        progressInterval: TimeInterval = 0.1,
+        cleanupTimeout: Double = 15
     ) {
         self.settings = settings
         self.credentials = credentials
         self.connectors = connectors
         self.fileManager = fileManager
         self.progressInterval = progressInterval
+        self.cleanupTimeout = cleanupTimeout
         let (stream, continuation) = AsyncStream.makeStream(of: UploadEvent.self)
         self.events = stream
         self.continuation = continuation
@@ -143,7 +148,8 @@ public actor UploadQueue {
 
     private func process(_ job: Job) async {
         continuation.yield(.started(id: job.id))
-        let task = Task { try await self.transfer(job) }
+        let written = WrittenFile()
+        let task = Task { try await self.transfer(job, written: written) }
         active = (job.id, task)
         let result = await task.result
         active = nil
@@ -152,6 +158,9 @@ public actor UploadQueue {
             // The session is mid-transfer and in an unknown state.
             await closeSession()
             continuation.yield(.cancelled(id: job.id))
+            if let leftover = written.leftover {
+                await delete(leftover)
+            }
             return
         }
         switch result {
@@ -165,7 +174,7 @@ public actor UploadQueue {
         }
     }
 
-    private func transfer(_ job: Job) async throws -> String {
+    private func transfer(_ job: Job, written: WrittenFile) async throws -> String {
         guard let config = settings.loadServerConfig(), config.isValid else {
             throw UploadFailure.notConfigured
         }
@@ -191,8 +200,10 @@ public actor UploadQueue {
         let throttle = ProgressThrottle(interval: progressInterval, total: total)
         let continuation = self.continuation
         let id = job.id
+        written.willUpload(to: remotePath, on: config, password: password)
         try await session.upload(fileURL: job.fileURL, to: remotePath) { sent in
-            if throttle.shouldReport(sent) {
+            written.serverHasFile()
+            if sent > 0, throttle.shouldReport(sent) {
                 continuation.yield(.progress(id: id, UploadProgress(bytesSent: sent, totalBytes: total)))
             }
         }
@@ -210,6 +221,19 @@ public actor UploadQueue {
         return session
     }
 
+    /// Removes the half-sent file of a cancelled upload, from the server the upload went to.
+    /// Best effort: if the server can't be reached or refuses, the file stays and the cancel still stands.
+    private func delete(_ leftover: WrittenFile.Leftover) async {
+        do {
+            try await withTimeout(seconds: cleanupTimeout) {
+                let session = try await self.session(for: leftover.config, password: leftover.password)
+                try await session.deleteFile(atPath: leftover.remotePath)
+            }
+        } catch {
+            await closeSession()
+        }
+    }
+
     private func closeSession() async {
         guard let openSession else { return }
         self.openSession = nil
@@ -225,6 +249,34 @@ public actor UploadQueue {
         if let error = error as? UploaderError { return error.errorDescription ?? "\(error)" }
         if error is CancellationError { return "Cancelled." }
         return (error as? LocalizedError)?.errorDescription ?? String(describing: error)
+    }
+}
+
+/// Tracks whether an upload has put a file on the server, so a cancel knows if there is anything to clean up.
+/// A cancel that lands before the server created the file (while connecting, or while picking a name)
+/// must leave the path alone: with `ConflictPolicy.replace` it can belong to a file the user already had.
+final class WrittenFile: @unchecked Sendable {
+    struct Leftover {
+        let remotePath: String
+        let config: ServerConfig
+        let password: String
+    }
+
+    private let lock = NSLock()
+    private var target: Leftover?
+    private var created = false
+
+    func willUpload(to remotePath: String, on config: ServerConfig, password: String) {
+        lock.withLock { target = Leftover(remotePath: remotePath, config: config, password: password) }
+    }
+
+    /// The server reported progress, which `ServerSession.upload` does first with 0 once it has created the file.
+    func serverHasFile() {
+        lock.withLock { created = true }
+    }
+
+    var leftover: Leftover? {
+        lock.withLock { created ? target : nil }
     }
 }
 

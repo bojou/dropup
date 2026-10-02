@@ -149,6 +149,7 @@ public actor FTPSession: ServerSession {
             throw Self.rejected(stor)
         }
 
+        progress(0)
         var sent: Int64 = 0
         do {
             while true {
@@ -166,6 +167,12 @@ public actor FTPSession: ServerSession {
         await data.close()
         let done = try await readReply(timeout: max(replyTimeout, 120))
         guard done.isPositiveCompletion else { throw Self.rejected(done) }
+    }
+
+    public func deleteFile(atPath remotePath: String) async throws {
+        try Self.validate(remotePath)
+        let reply = try await command("DELE \(remotePath)")
+        guard reply.isPositiveCompletion else { throw Self.rejected(reply) }
     }
 
     public func close() async {

@@ -167,6 +167,7 @@ final class SFTPSession: ServerSession, @unchecked Sendable {
             throw Self.map(error)
         }
 
+        progress(0)
         do {
             var offset: UInt64 = 0
             var sent: Int64 = 0
@@ -196,6 +197,14 @@ final class SFTPSession: ServerSession, @unchecked Sendable {
             try await file.close()
         } catch {
             try? await file.close()
+            throw Self.map(error)
+        }
+    }
+
+    func deleteFile(atPath remotePath: String) async throws {
+        do {
+            try await sftp.remove(at: remotePath)
+        } catch {
             throw Self.map(error)
         }
     }

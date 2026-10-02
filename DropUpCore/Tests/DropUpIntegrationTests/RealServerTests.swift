@@ -70,6 +70,37 @@ struct RealServerTests {
     }
 
     @Test(.enabled(if: RealServerTests.enabled), arguments: [TransferProtocol.ftp, .sftp])
+    func cancellingRemovesTheHalfSentFile(_ transferProtocol: TransferProtocol) async throws {
+        let name = uniqueName()
+        let local = FileManager.default.temporaryDirectory.appendingPathComponent(name)
+        // A sparse 512 MB file: too big to finish before the cancel, cheap to create and read.
+        #expect(FileManager.default.createFile(atPath: local.path, contents: nil))
+        let handle = try FileHandle(forWritingTo: local)
+        try handle.truncate(atOffset: 512 * 1024 * 1024)
+        try handle.close()
+        defer { try? FileManager.default.removeItem(at: local) }
+
+        let queue = makeQueue(config(transferProtocol))
+        let ids = await queue.enqueue([local])
+        // Wait until the server really holds part of the file, then cancel.
+        var partialSize = 0
+        for _ in 0..<2000 where partialSize == 0 {
+            try await Task.sleep(nanoseconds: 5_000_000)
+            let attributes = try? FileManager.default.attributesOfItem(atPath: Self.root! + "/drops/\(name)")
+            partialSize = (attributes?[.size] as? NSNumber)?.intValue ?? 0
+        }
+        #expect(partialSize > 0)
+        await queue.cancel(ids[0])
+        await queue.waitUntilIdle()
+        await queue.finish()
+        var events: [UploadEvent] = []
+        for await event in queue.events { events.append(event) }
+
+        #expect(events.contains(.cancelled(id: ids[0])))
+        #expect(serverFile("/drops/\(name)") == nil)
+    }
+
+    @Test(.enabled(if: RealServerTests.enabled), arguments: [TransferProtocol.ftp, .sftp])
     func emptyFileUploads(_ transferProtocol: TransferProtocol) async throws {
         let name = uniqueName("txt")
         let local = FileManager.default.temporaryDirectory.appendingPathComponent(name)

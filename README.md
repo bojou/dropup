@@ -20,7 +20,7 @@ To have DropUp start when you log in, turn on **Open at login** in Settings → 
 
 - Drag a file toward the menubar icon. A drop panel opens under it; drop the file there (or straight on the icon).
 - The icon shows progress while uploading, a brief check when done, and a red dot if something failed.
-- Click the icon for the list of uploads: progress, speed, cancel, retry and recent uploads.
+- Click the icon for the list of uploads: progress, speed, cancel, retry and recent uploads. Cancelling a running upload also deletes the half-sent file from the server.
 - To send files to another folder on the same server, click the icon and choose **Change Folder** at the bottom of the popover. The new folder applies from the next upload.
 - Server, credentials and upload folder are set in onboarding and editable in Settings → Connection. Passwords live in the macOS Keychain. An optional display name there (like "My website") is shown in the popover in place of the host.
 
