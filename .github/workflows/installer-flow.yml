@@ -39,8 +39,11 @@ jobs:
         run: |
           sw_vers
           DMG="$HOME/Downloads/DropUp-9.9.9.dmg"
-          echo "attaching"
-          perl -e 'alarm shift; exec @ARGV' 60 hdiutil attach "$DMG" || { echo "attach failed or timed out"; exit 1; }
+          echo "mounting the way Finder does (open on the .dmg)"
+          perl -e 'alarm shift; exec @ARGV' 20 open "$DMG" || echo "open timed out"
+          for _ in $(seq 1 30); do [ -d /Volumes/DropUp/DropUp.app ] && break; sleep 1; done
+          [ -d /Volumes/DropUp/DropUp.app ] || { echo "open did not mount it"; exit 1; }
+          echo "mounted by open"
           ls -la /Volumes/DropUp
           echo "--- hdiutil info for the DropUp image"
           hdiutil info | grep -B2 -A12 'DropUp-9.9.9' || true
