@@ -260,6 +260,11 @@ private struct UploadRow: View {
                     Image(systemName: "folder.fill")
                         .font(.system(size: 15))
                         .foregroundStyle(Color.accentColor)
+                } else if hidesNames {
+                    // The extension says too much about a file whose name is hidden.
+                    Image(systemName: "doc")
+                        .font(.system(size: 14))
+                        .foregroundStyle(.secondary)
                 } else {
                     Text(item.badge)
                         .font(.system(size: 9, weight: .bold))
@@ -270,7 +275,7 @@ private struct UploadRow: View {
             .frame(width: 32, height: 32)
             .background(RoundedRectangle(cornerRadius: 7, style: .continuous).fill(Color.primary.opacity(0.06)))
             VStack(alignment: .leading, spacing: 4) {
-                Text(item.fileName)
+                Text(ActivityText.displayName(of: item, hidingNames: hidesNames))
                     .font(.system(size: 13))
                     .lineLimit(1)
                     .truncationMode(.middle)
@@ -296,6 +301,8 @@ private struct UploadRow: View {
     private var isFailure: Bool {
         if case .failed = item.state { true } else { false }
     }
+
+    private var hidesNames: Bool { model.preferences.hideRecentNames }
 
     private var meta: String {
         let total = Format.bytes(item.totalBytes)
@@ -338,8 +345,10 @@ private struct UploadRow: View {
                 .background(Circle().fill(Color.green))
                 .accessibilityLabel("Uploaded")
         case .failed:
-            Button("Retry") { model.retry(item.id) }
-                .controlSize(.small)
+            if model.canRetry(item.id) {
+                Button("Retry") { model.retry(item.id) }
+                    .controlSize(.small)
+            }
         case .cancelled:
             EmptyView()
         }

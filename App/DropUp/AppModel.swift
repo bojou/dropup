@@ -33,6 +33,8 @@ final class AppModel {
     @ObservationIgnored let settings: any SettingsStore
     @ObservationIgnored let credentials: any CredentialStore
     @ObservationIgnored let hostKeys: any HostKeyStore
+    /// Where the Recent list is kept for the settings that keep it between launches.
+    @ObservationIgnored private let recentStore: any RecentStore
     @ObservationIgnored let browser: ServerBrowser
     @ObservationIgnored private let connectors: any ConnectorFactory
     /// Downloads started from the Browse window.
@@ -46,15 +48,19 @@ final class AppModel {
     /// Called with the remote path of each file that finishes uploading. The Browse window uses it to refresh.
     @ObservationIgnored var onUploadSucceeded: ((String) -> Void)?
     @ObservationIgnored private var ticker: Task<Void, Never>?
+    /// Sleeps until the next finished upload is due to leave the Recent list.
+    @ObservationIgnored private var expiry: Task<Void, Never>?
 
     init(
         settings: any SettingsStore = UserDefaultsSettingsStore(),
         credentials: any CredentialStore = KeychainCredentialStore(),
-        hostKeys: any HostKeyStore = UserDefaultsHostKeyStore()
+        hostKeys: any HostKeyStore = UserDefaultsHostKeyStore(),
+        recentStore: any RecentStore = UserDefaultsRecentStore()
     ) {
         self.settings = settings
         self.credentials = credentials
         self.hostKeys = hostKeys
+        self.recentStore = recentStore
         let connectors = StandardConnectorFactory(hostKeys: hostKeys)
         self.connectors = connectors
         self.downloads = DownloadModel(connectors: connectors)
@@ -63,6 +69,12 @@ final class AppModel {
         self.queue = UploadQueue(settings: settings, credentials: credentials, connectors: connectors)
         self.config = settings.loadServerConfig()
         self.preferences = settings.loadPreferences()
+        if preferences.recentSurvivesQuit {
+            activity.restore(recentStore.load())
+            pruneRecent()
+        } else {
+            recentStore.save([])
+        }
 
         Task { @MainActor [weak self, events = queue.events] in
             for await event in events {
@@ -112,23 +124,35 @@ final class AppModel {
         Task { await queue.cancelAll() }
     }
 
+    /// Whether a failed upload can be sent again. One restored after relaunching can't: the file's location is gone.
+    func canRetry(_ id: UUID) -> Bool {
+        sourceURLs[id] != nil
+    }
+
     func retry(_ id: UUID) {
         guard let url = sourceURLs[id] else { return }
         let directory = destinations[id]
         activity.remove(id)
         sourceURLs[id] = nil
         destinations[id] = nil
+        persistRecent()
         upload([url], toDirectory: directory)
     }
 
     func clearFinished() {
         activity.clearFinished()
         forgetUnusedSources()
+        persistRecent()
+        scheduleRecentExpiry()
     }
 
     func popoverVisibilityChanged(_ shown: Bool) {
         isPopoverShown = shown
-        if shown { activity.markFailuresSeen() }
+        if shown {
+            activity.markFailuresSeen()
+            // The timer can sleep through a Mac's sleep, so look again whenever someone is about to read the list.
+            pruneRecent()
+        }
     }
 
     // MARK: Browsing
@@ -177,6 +201,8 @@ final class AppModel {
         change(&updated)
         preferences = updated
         try? settings.savePreferences(updated)
+        // A new count or clearing time applies to what is listed right away.
+        pruneRecent()
     }
 
     /// The remembered SFTP server identity for `config`, as a fingerprint, or nil if none is stored.
@@ -199,7 +225,6 @@ final class AppModel {
         activity.apply(event, now: now)
         switch event {
         case .succeeded, .failed, .cancelled:
-            activity.trim(toRecent: preferences.recentLimit)
             forgetUnusedSources()
             refreshClock(after: 2.1)
         default:
@@ -214,11 +239,43 @@ final class AppModel {
         if isPopoverShown { activity.markFailuresSeen() }
         if activity.isBusy { startTicker() } else { stopTicker() }
         if wasBusy, !activity.isBusy { batchFinished() }
+        // After the notice, which is worded from the batch's own items: the rules may remove them.
+        switch event {
+        case .succeeded, .failed, .cancelled: pruneRecent()
+        default: break
+        }
+    }
+
+    // MARK: Recent list
+
+    /// Applies the Recent list settings to what is listed, then keeps what has to be kept and schedules the next removal.
+    private func pruneRecent() {
+        activity.applyRecentPolicy(preferences.recentPolicy, now: Date())
+        forgetUnusedSources()
+        persistRecent()
+        scheduleRecentExpiry()
+    }
+
+    private func persistRecent() {
+        recentStore.save(preferences.recentSurvivesQuit ? activity.storedFinished : [])
+    }
+
+    private func scheduleRecentExpiry() {
+        expiry?.cancel()
+        expiry = nil
+        // While uploads run nothing is removed; the end of the batch prunes and schedules again.
+        guard !activity.isBusy, let due = activity.nextRecentExpiry(lifetime: preferences.recentLifetime) else { return }
+        let delay = max(due.timeIntervalSinceNow, 1)
+        expiry = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+            guard !Task.isCancelled else { return }
+            self?.pruneRecent()
+        }
     }
 
     /// Plays the sound and posts the notification, if wanted and if the user isn't already looking at the popover.
     private func batchFinished() {
-        guard let notice = ActivityText.completionNotice(activity) else { return }
+        guard let notice = ActivityText.completionNotice(activity, hidingNames: preferences.hideRecentNames) else { return }
         if preferences.playSound { NSSound(named: "Glass")?.play() }
         if preferences.notifyWhenDone, !isPopoverShown {
             Notifier.post(title: notice.title, body: notice.body)

@@ -53,8 +53,11 @@ public struct UploadActivity: Equatable, Sendable {
     }
 
     /// Newest first among finished items; waiting and running items keep their drop order.
-    public private(set) var items: [Item] = []
-    public private(set) var hasUnseenFailure = false
+    public internal(set) var items: [Item] = []
+    public internal(set) var hasUnseenFailure = false
+    /// When the latest upload went through. The icon's brief check mark runs off this, so it still shows when the
+    /// Recent list keeps nothing.
+    public private(set) var lastSucceededAt: Date?
 
     // Speed is measured over a short sliding window of cumulative bytes sent.
     private var batchIDs: Set<UUID> = []
@@ -92,9 +95,7 @@ public struct UploadActivity: Equatable, Sendable {
     public func menubarState(now: Date = Date(), successFlash: TimeInterval = 2) -> MenubarState {
         if isBusy { return .uploading(fraction: overallFraction) }
         if hasUnseenFailure { return .failed }
-        if let last = items.compactMap(\.finishedAt).max(),
-           now.timeIntervalSince(last) < successFlash,
-           items.contains(where: { if case .succeeded = $0.state { true } else { false } }) {
+        if let last = lastSucceededAt, now.timeIntervalSince(last) < successFlash {
             return .succeeded
         }
         return .idle
@@ -147,6 +148,7 @@ public struct UploadActivity: Equatable, Sendable {
                 $0.bytesSent = $0.totalBytes
                 $0.state = .succeeded(remotePath: remotePath)
             }
+            lastSucceededAt = now
             finish(id, now)
 
         case .failed(let id, let failure):
