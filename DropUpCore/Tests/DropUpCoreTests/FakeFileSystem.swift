@@ -17,6 +17,9 @@ final class FakeFileSystem: ServerSession, @unchecked Sendable {
     private var _failures: [String: any Error] = [:]
     private var _delayMilliseconds: UInt64 = 0
     private var _nextFailure: (any Error)?
+    private var contents: [String: Data] = [:]
+    private var _hangingUploads: Set<String> = []
+    private var _uploads: [String] = []
 
     /// Lists a link to a folder as a plain folder, as some servers' machine-readable listings do.
     var reportsLinksAsFolders = false
@@ -34,10 +37,25 @@ final class FakeFileSystem: ServerSession, @unchecked Sendable {
     /// Makes the next command of any kind fail with `error`, as when the server dropped an idle login.
     func failNextCommand(with error: any Error) { lock.withLock { _nextFailure = error } }
 
+    /// Makes an upload of `path` create the file, then wait until it is cancelled: a half-sent file.
+    func hangUpload(of path: String) { lock.withLock { _ = _hangingUploads.insert(path) } }
+
+    /// Remote paths in the order uploads started.
+    var uploads: [String] { lock.withLock { _uploads } }
+
+    /// What is stored in the file at `path`, for files that were uploaded or added with data.
+    func data(at path: String) -> Data? { lock.withLock { contents[path] } }
+
     /// Makes each command take this long, so a test can cancel one in flight.
     func slowDown(milliseconds: UInt64) { lock.withLock { _delayMilliseconds = milliseconds } }
 
     // MARK: Building a tree
+
+    @discardableResult
+    func addFile(_ path: String, data: Data) -> Self {
+        lock.withLock { makeParents(of: path); nodes[path] = .file(data.count); contents[path] = data }
+        return self
+    }
 
     @discardableResult
     func addFolder(_ path: String) -> Self {
@@ -134,16 +152,46 @@ final class FakeFileSystem: ServerSession, @unchecked Sendable {
         }
     }
 
+    func listEntriesWithLinks(atPath path: String) async throws -> [RemoteEntry] {
+        let entries = try await listEntries(atPath: path)
+        let prefix = path == "/" ? "/" : path + "/"
+        return entries.map { entry in
+            var entry = entry
+            if case .link? = lock.withLock({ nodes[prefix + entry.name] }) { entry.kind = .link }
+            return entry
+        }
+    }
+
     func upload(fileURL: URL, to remotePath: String, progress: @escaping @Sendable (Int64) -> Void) async throws {
-        try await begin("STOR \(remotePath)")
-        lock.withLock { nodes[remotePath] = .file(0) }
+        try await begin("STOR \(remotePath)", failing: remotePath)
+        let data = try Data(contentsOf: fileURL)
+        let hangs: Bool = try lock.withLock {
+            guard nodes[Self.parent(of: remotePath)] == .folder else { throw Self.refuse("No such folder") }
+            if nodes[remotePath] == .folder { throw Self.refuse("Is a directory") }
+            _uploads.append(remotePath)
+            nodes[remotePath] = .file(0)
+            contents[remotePath] = Data()
+            return _hangingUploads.contains(remotePath)
+        }
         progress(0)
+        if hangs {
+            while true { try await Task.sleep(nanoseconds: 1_000_000) }
+        }
+        lock.withLock { nodes[remotePath] = .file(data.count); contents[remotePath] = data }
+        progress(Int64(data.count / 2))
+        progress(Int64(data.count))
     }
 
     func download(remotePath: String, to fileURL: URL, progress: @escaping @Sendable (Int64) -> Void) async throws {
-        try await begin("RETR \(remotePath)")
-        guard case .file? = lock.withLock({ nodes[remotePath] }) else { throw Self.refuse("No such file") }
-        try Data().write(to: fileURL)
+        try await begin("RETR \(remotePath)", failing: remotePath)
+        let node = lock.withLock { nodes[remotePath] }
+        guard case .file(let size)? = node else { throw Self.refuse("No such file") }
+        let data = lock.withLock { contents[remotePath] } ?? Data(repeating: 7, count: size)
+        try data.prefix(data.count / 2).write(to: fileURL)
+        progress(Int64(data.count / 2))
+        try Task.checkCancellation()
+        try data.write(to: fileURL)
+        progress(Int64(data.count))
     }
 
     func deleteFile(atPath remotePath: String) async throws {

@@ -30,6 +30,7 @@ public enum FileOperationError: Error, Equatable, Sendable {
     case movedIntoItself
     case isRoot
     case tooDeep
+    case tooMany
     /// Something inside a folder could not be deleted. `path` is relative to the folder being deleted.
     case failedInside(path: String, reason: String)
 }
@@ -46,7 +47,9 @@ extension FileOperationError: LocalizedError {
         case .isRoot:
             "The top folder of the server can't be changed."
         case .tooDeep:
-            "The folders are nested too deeply to delete safely."
+            "The folders are nested too deeply to handle safely."
+        case .tooMany:
+            "There are too many items in this folder to handle at once."
         case .failedInside(let path, let reason):
             "“\(path)” couldn't be deleted. \(reason)"
         }

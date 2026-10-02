@@ -181,11 +181,11 @@ struct BrowseView: View {
             .help("New folder")
             .accessibilityLabel("New Folder")
 
-            Button { download(selectedFiles, askingWhere: false) } label: {
+            Button { download(selectedEntries, askingWhere: false) } label: {
                 Image(systemName: "arrow.down.circle").frame(width: 24, height: 22)
             }
-            .disabled(selectedFiles.isEmpty)
-            .help("Save the selected files to your Downloads folder")
+            .disabled(selection.isEmpty)
+            .help("Save the selected items to your Downloads folder")
             .accessibilityLabel("Download")
 
             Button { askToDelete(selectedEntries) } label: {
@@ -345,14 +345,11 @@ struct BrowseView: View {
                 Button("Paste") { browse.paste() }
             }
         } else {
-            let files = chosen.filter { $0.kind != .folder }
             if chosen.count == 1, chosen[0].kind != .file {
                 Button("Open") { activate(ids) }
             }
-            if !files.isEmpty {
-                Button(files.count == 1 ? "Download" : "Download \(files.count) Files") { download(files, askingWhere: false) }
-                Button("Download To…") { download(files, askingWhere: true) }
-            }
+            Button(chosen.count == 1 ? "Download" : "Download \(chosen.count) Items") { download(chosen, askingWhere: false) }
+            Button("Download To…") { download(chosen, askingWhere: true) }
             Divider()
             if chosen.count == 1 {
                 Button("Rename…") { startRename(chosen[0]) }
@@ -530,11 +527,6 @@ struct BrowseView: View {
         } else {
             download(chosen, askingWhere: false)
         }
-    }
-
-    /// The selected items that can be downloaded: files, and links, which usually point at files.
-    private var selectedFiles: [RemoteEntry] {
-        selectedEntries.filter { $0.kind != .folder }
     }
 
     private func isCut(_ entry: RemoteEntry) -> Bool {

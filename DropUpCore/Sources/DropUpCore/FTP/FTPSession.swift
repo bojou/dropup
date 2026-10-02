@@ -109,13 +109,27 @@ public actor FTPSession: ServerSession {
         return RemoteEntry.sorted(entries)
     }
 
-    /// Asks for a folder listing: `MLSD`, or `LIST` on servers without it.
-    private func fetchListing(atPath path: String) async throws -> (text: String, machineReadable: Bool) {
+    /// `listEntries`, then a second look with `LIST`, whose Unix-style lines mark links plainly even where `MLSD` follows them.
+    /// A server whose `LIST` can't be read, or that refuses it, just keeps the first answer.
+    public func listEntriesWithLinks(atPath path: String) async throws -> [RemoteEntry] {
+        let entries = try await listEntries(atPath: path)
+        guard let listing = try? await fetchListing(atPath: path, forceLIST: true), !listing.machineReadable else { return entries }
+        let links = Set(FTPListing.entriesFromLIST(listing.text).filter { $0.kind == .link }.map(\.name))
+        guard !links.isEmpty else { return entries }
+        return entries.map { entry in
+            var entry = entry
+            if links.contains(entry.name) { entry.kind = .link }
+            return entry
+        }
+    }
+
+    /// Asks for a folder listing: `MLSD`, or `LIST` on servers without it (or when `forceLIST` is set).
+    private func fetchListing(atPath path: String, forceLIST: Bool = false) async throws -> (text: String, machineReadable: Bool) {
         try Self.validate(path)
         var data = try await openDataStream()
-        var reply = try await command("MLSD \(path)")
-        var machineReadable = true
-        if [500, 501, 502, 504].contains(reply.code) {
+        var reply = try await command(forceLIST ? "LIST \(path)" : "MLSD \(path)")
+        var machineReadable = !forceLIST
+        if !forceLIST, [500, 501, 502, 504].contains(reply.code) {
             // No MLSD (RFC 3659): fall back to LIST and parse Unix-style `ls -l` lines.
             await data.close()
             data = try await openDataStream()

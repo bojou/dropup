@@ -16,6 +16,8 @@ final class FakeFTPServer: ByteStreamOpener, @unchecked Sendable {
     var readOnlyPaths: Set<String> = []
     /// Folder path → subfolder names.
     var folders: [String: [String]] = ["/": ["drops"], "/drops": ["My Photos", "archive"]]
+    /// Names of subfolders that are really links: MLSD (like pyftpdlib) lists them as folders, LIST shows the link.
+    var linkedFolders: Set<String> = []
 
     private(set) var files: [String: Data] = [:]
     private(set) var commands: [String] = []
@@ -201,7 +203,9 @@ final class FakeFTPServer: ByteStreamOpener, @unchecked Sendable {
             return entries.joined(separator: "\r\n") + "\r\n"
         }
         let entries = ["-rw-r--r--    1 me  staff     5 Sep 10 12:00 notes.txt", "lrwxr-xr-x    1 me  staff     5 Sep 10 12:00 link -> elsewhere"]
-            + subfolders.map { "drwxr-xr-x    2 me  staff  4096 Sep 10 12:00 \($0)" }
+            + subfolders.map { linkedFolders.contains($0)
+                ? "lrwxr-xr-x    1 me  staff     5 Sep 10 12:00 \($0) -> elsewhere"
+                : "drwxr-xr-x    2 me  staff  4096 Sep 10 12:00 \($0)" }
         return entries.joined(separator: "\r\n") + "\r\n"
     }
 }

@@ -1,17 +1,22 @@
 import Foundation
 
-/// One file to fetch from the server.
+/// One file, or one folder with everything inside it, to fetch from the server.
 public struct RemoteDownload: Sendable, Equatable {
     public var remotePath: String
-    /// Bytes, when the listing said. Only used for progress.
+    /// Bytes, when the listing said. Only used for progress. Unknown for a folder until it has been looked through.
     public var size: Int64?
+    public var isFolder: Bool
 
-    public init(remotePath: String, size: Int64? = nil) {
+    public init(remotePath: String, size: Int64? = nil, isFolder: Bool = false) {
         self.remotePath = remotePath
         self.size = size
+        self.isFolder = isFolder
     }
 
-    public var fileName: String { (remotePath as NSString).lastPathComponent }
+    /// The name on the server. A folder's ends with `/`, in events and in the list the app shows.
+    public var fileName: String { baseName + (isFolder ? "/" : "") }
+
+    var baseName: String { (remotePath as NSString).lastPathComponent }
 }
 
 public enum DownloadEvent: Sendable, Equatable {
@@ -24,7 +29,10 @@ public enum DownloadEvent: Sendable, Equatable {
     case cancelled(id: UUID)
 }
 
-/// Downloads files one at a time and reports what happens on `events`.
+/// Downloads files and folders one at a time and reports what happens on `events`.
+///
+/// A folder arrives as a folder of the same name, with everything inside it. It is one item in the queue.
+/// Symbolic links inside it are left out, and if it is cancelled or fails halfway the whole local folder is removed.
 ///
 /// Each file is written next to its final place under a temporary name and moved into position when it
 /// is complete, so a cancelled or failed download never leaves a half-written file under the real name.
@@ -159,7 +167,10 @@ public actor DownloadQueue {
 
     private func transfer(_ job: Job) async throws -> URL {
         let session = try await session(for: job.config, password: job.password)
-        let name = job.file.fileName
+        if job.file.isFolder {
+            return try await transferFolder(job, session: session)
+        }
+        let name = job.file.baseName
         let temporary = job.directory.appendingPathComponent(".\(name).\(job.id.uuidString.prefix(8)).dropup-part")
         let total = job.file.size ?? 0
         let throttle = ProgressThrottle(interval: progressInterval, total: total)
@@ -181,13 +192,57 @@ public actor DownloadQueue {
         }
     }
 
+    /// Fetches a folder into a new local folder of the same name. Returns that folder.
+    private func transferFolder(_ job: Job, session: any ServerSession) async throws -> URL {
+        let tree = try await RemoteTree.walk(job.file.remotePath, session: session)
+        let total = tree.totalBytes
+        let id = job.id
+        // Now that the folder has been looked through, the list can show how big it is.
+        continuation.yield(.progress(id: id, UploadProgress(bytesSent: 0, totalBytes: total)))
+
+        let root = freeURL(for: job.file.baseName, in: job.directory, numbered: RemoteFileName.numberedFolder)
+        do {
+            try fileManager.createDirectory(at: root, withIntermediateDirectories: false)
+            for folder in tree.directories {
+                try fileManager.createDirectory(at: root.appendingPathComponent(folder), withIntermediateDirectories: false)
+            }
+            let throttle = ProgressThrottle(interval: progressInterval, total: total)
+            let continuation = self.continuation
+            var receivedBefore: Int64 = 0
+            for file in tree.files {
+                try Task.checkCancellation()
+                let base = receivedBefore
+                let remote = job.file.remotePath.hasSuffix("/") ? job.file.remotePath + file.relativePath : job.file.remotePath + "/" + file.relativePath
+                do {
+                    try await session.download(remotePath: remote, to: root.appendingPathComponent(file.relativePath)) { received in
+                        if throttle.shouldReport(base + received) {
+                            continuation.yield(.progress(id: id, UploadProgress(bytesSent: base + received, totalBytes: total)))
+                        }
+                    }
+                } catch let error as UploaderError {
+                    throw FolderTransferError(path: file.relativePath, reason: error.errorDescription ?? "\(error)")
+                }
+                receivedBefore += file.size ?? 0
+            }
+            try Task.checkCancellation()
+            return root
+        } catch {
+            try? fileManager.removeItem(at: root)
+            throw error
+        }
+    }
+
     /// `photo.png`, or `photo-1.png`, `photo-2.png`… when the folder already has that name.
-    private func freeURL(for name: String, in directory: URL) -> URL {
+    private func freeURL(
+        for name: String,
+        in directory: URL,
+        numbered: (String, Int) -> String = { RemoteFileName.numbered($0, index: $1) }
+    ) -> URL {
         var candidate = directory.appendingPathComponent(name)
         var index = 0
         while fileManager.fileExists(atPath: candidate.path), index < 10_000 {
             index += 1
-            candidate = directory.appendingPathComponent(RemoteFileName.numbered(name, index: index))
+            candidate = directory.appendingPathComponent(numbered(name, index))
         }
         return candidate
     }

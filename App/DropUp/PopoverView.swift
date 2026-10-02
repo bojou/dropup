@@ -212,12 +212,20 @@ private struct UploadRow: View {
 
     var body: some View {
         HStack(spacing: 10) {
-            Text(item.badge)
-                .font(.system(size: 9, weight: .bold))
-                .tracking(0.4)
-                .foregroundStyle(.secondary)
-                .frame(width: 32, height: 32)
-                .background(RoundedRectangle(cornerRadius: 7, style: .continuous).fill(Color.primary.opacity(0.06)))
+            Group {
+                if item.isFolder {
+                    Image(systemName: "folder.fill")
+                        .font(.system(size: 15))
+                        .foregroundStyle(Color.accentColor)
+                } else {
+                    Text(item.badge)
+                        .font(.system(size: 9, weight: .bold))
+                        .tracking(0.4)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .frame(width: 32, height: 32)
+            .background(RoundedRectangle(cornerRadius: 7, style: .continuous).fill(Color.primary.opacity(0.06)))
             VStack(alignment: .leading, spacing: 4) {
                 Text(item.fileName)
                     .font(.system(size: 13))

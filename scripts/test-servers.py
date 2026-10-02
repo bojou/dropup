@@ -39,7 +39,7 @@ asyncssh.sftp.SFTPServerHandler._packet_handlers[asyncssh.sftp.FXP_RENAME] = _le
 USER, PASSWORD = "me", "secret"
 FTP_PORT = int(os.environ.get("DROPUP_IT_FTP_PORT", "2121"))
 SFTP_PORT = int(os.environ.get("DROPUP_IT_SFTP_PORT", "2222"))
-PASSIVE = (30000, 30100)
+PASSIVE = (30000, 32000)
 
 
 def start_ftp(root):

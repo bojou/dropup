@@ -133,15 +133,14 @@ struct UploadQueueTests {
         #expect(events.last == .failed(id: ids[0], .missingPassword))
     }
 
-    @Test func rejectsFoldersAndMissingFiles() async throws {
+    @Test func rejectsMissingItems() async throws {
         let temp = try TempFiles()
         defer { temp.remove() }
         let missing = temp.directory.appendingPathComponent("gone.txt")
 
-        let (ids, events) = await run(makeQueue(config: config), files: [temp.directory, missing])
+        let (ids, events) = await run(makeQueue(config: config), files: [missing])
 
         #expect(events.contains(.failed(id: ids[0], .unsupportedItem)))
-        #expect(events.contains(.failed(id: ids[1], .unsupportedItem)))
     }
 
     @Test func reportsReadableErrorsAndKeepsGoing() async throws {

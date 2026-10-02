@@ -124,6 +124,13 @@ struct UploadActivityTests {
         #expect(UploadActivity.Item(id: UUID(), fileName: "movie.webarchive", totalBytes: 1).badge == "WEBA")
         #expect(UploadActivity.Item(id: UUID(), fileName: "README", totalBytes: 1).badge == "")
     }
+
+    @Test func aFolderHasNoBadge() {
+        let folder = UploadActivity.Item(id: UUID(), fileName: "photos.2026/", totalBytes: 1)
+        #expect(folder.isFolder)
+        #expect(folder.badge == "")
+        #expect(UploadActivity.Item(id: UUID(), fileName: "photos.2026", totalBytes: 1).isFolder == false)
+    }
 }
 
 struct DropZoneGeometryTests {

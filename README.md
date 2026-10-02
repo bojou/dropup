@@ -18,11 +18,11 @@ To have DropUp start when you log in, turn on **Open at login** in Settings → 
 
 ## Using it
 
-- Drag a file toward the menubar icon. A drop panel opens under it; drop the file there (or straight on the icon).
+- Drag a file or a whole folder toward the menubar icon. A drop panel opens under it; drop it there (or straight on the icon). A folder goes up with everything inside it and shows as one item in the list. Links and `.DS_Store` files inside it are left out.
 - The icon shows progress while uploading, a brief check when done, and a red dot if something failed.
 - Click the icon for the list of uploads: progress, speed, cancel, retry and recent uploads. Cancelling a running upload also deletes the half-sent file from the server.
 - To send files to another folder on the same server, click the icon and choose **Change Folder** at the bottom of the popover. The new folder applies from the next upload.
-- To look around the whole server, click the icon and choose **Browse**. The window lists every folder and file with size and date. Use the back and forward arrows (or the path bar) to move around like in Finder, and click a column heading to sort. Drop files onto it, or onto one of its folders, to upload them. Select one or more files and right-click (or two-finger tap) for **Download** and **Download To…**; double-clicking a file downloads it too.
+- To look around the whole server, click the icon and choose **Browse**. The window lists every folder and file with size and date. Use the back and forward arrows (or the path bar) to move around like in Finder, and click a column heading to sort. Drop files onto it, or onto one of its folders, to upload them. Select one or more files or folders and right-click (or two-finger tap) for **Download** and **Download To…**; double-clicking a file downloads it too, and a folder arrives as a folder (links inside it are left out; if the download fails or is cancelled, the half-made folder is removed).
 - In the same window you can make a **New Folder**, **Rename** (Return), **Delete** (with a confirmation; folders go with everything inside them), and move things: drag them onto a folder or onto a step of the path bar, or choose **Cut**, open the destination and **Paste**, or use **Move To…**. DropUp never replaces an item that is already there.
 - Server, credentials and upload folder are set in onboarding and editable in Settings → Connection. Passwords live in the macOS Keychain. An optional display name there (like "My website") is shown in the popover in place of the host.
 
