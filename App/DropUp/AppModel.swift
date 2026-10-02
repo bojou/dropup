@@ -39,6 +39,8 @@ final class AppModel {
     @ObservationIgnored private let connectors: any ConnectorFactory
     /// Downloads started from the Browse window.
     @ObservationIgnored let downloads: DownloadModel
+    /// Fetches items dragged out of the Browse window once they are dropped on the Mac.
+    @ObservationIgnored let dragExport: DragExport
     @ObservationIgnored private let queue: UploadQueue
     @ObservationIgnored private var sourceURLs: [UUID: URL] = [:]
     /// Files dropped into the Browse window go to the folder it showed; a retry sends them there again.
@@ -58,6 +60,7 @@ final class AppModel {
         let connectors = StandardConnectorFactory(hostKeys: hostKeys)
         self.connectors = connectors
         self.downloads = DownloadModel(connectors: connectors)
+        self.dragExport = DragExport(connectors: connectors)
         self.browser = ServerBrowser(connectors: connectors)
         self.queue = UploadQueue(settings: settings, credentials: credentials, connectors: connectors)
         self.config = settings.loadServerConfig()

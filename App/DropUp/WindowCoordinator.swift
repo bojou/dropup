@@ -91,6 +91,9 @@ final class WindowCoordinator: NSObject, NSWindowDelegate {
             browseModel?.close()
             browseModel = nil
             model.onUploadSucceeded = nil
+            // Whatever was dragged out has long been copied to where it was dropped.
+            let export = model.dragExport
+            Task { await export.removeFetchedFiles() }
         }
         let anotherIsOpen = [onboardingWindow, settingsWindow, browseWindow].contains { window in
             guard let window else { return false }
