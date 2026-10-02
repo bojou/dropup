@@ -44,6 +44,16 @@ public protocol ServerSession: Sendable {
     /// Deletes the file at `remotePath`.
     func deleteFile(atPath remotePath: String) async throws
 
+    /// Copies the file at `remotePath` to `fileURL`, replacing anything already there.
+    /// `progress` receives the total number of bytes received so far.
+    /// The local file is only created once the server has agreed to send the file.
+    /// Must stop promptly with `CancellationError` when the task is cancelled.
+    func download(
+        remotePath: String,
+        to fileURL: URL,
+        progress: @escaping @Sendable (Int64) -> Void
+    ) async throws
+
     /// Logs out and closes the connection. Never throws.
     func close() async
 }

@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 import DropUpCore
 
@@ -17,6 +18,10 @@ struct BrowseView: View {
             toolbar
             Divider()
             content
+            if !model.downloads.items.isEmpty {
+                Divider()
+                downloadsPanel
+            }
             if let progress = uploadProgress {
                 Divider()
                 uploadStrip(progress)
@@ -60,6 +65,19 @@ struct BrowseView: View {
             .keyboardShortcut("r", modifiers: .command)
             .help("Reload this folder")
             .accessibilityLabel("Reload")
+
+            Divider().frame(height: 18)
+
+            Button { download(selectedFiles, askingWhere: false) } label: {
+                Label("Download", systemImage: "arrow.down.circle")
+            }
+            .disabled(selectedFiles.isEmpty)
+            .help("Save the selected files to your Downloads folder")
+            Button { download(selectedFiles, askingWhere: true) } label: {
+                Text("Download To…")
+            }
+            .disabled(selectedFiles.isEmpty)
+            .help("Choose where to save the selected files")
         }
         .buttonStyle(.borderless)
         .padding(.horizontal, 12)
@@ -142,13 +160,17 @@ struct BrowseView: View {
             }
             .width(min: 120, ideal: 170, max: 230)
         }
-        .contextMenu(forSelectionType: RemoteEntry.ID.self) { _ in
-            EmptyView()
-        } primaryAction: { names in
-            openFirst(of: names)
+        .contextMenu(forSelectionType: RemoteEntry.ID.self) { ids in
+            let files = visible.filter { ids.contains($0.id) && $0.kind != .folder }
+            if !files.isEmpty {
+                Button(files.count == 1 ? "Download" : "Download \(files.count) Files") { download(files, askingWhere: false) }
+                Button("Download To…") { download(files, askingWhere: true) }
+            }
+        } primaryAction: { ids in
+            activate(ids)
         }
         .onKeyPress(.return) {
-            openFirst(of: selection)
+            activate(selection)
             return .handled
         }
     }
@@ -178,6 +200,33 @@ struct BrowseView: View {
             }
             .padding(6)
             .allowsHitTesting(false)
+    }
+
+    // MARK: Downloads
+
+    private var downloadsPanel: some View {
+        let downloads = model.downloads
+        return VStack(spacing: 0) {
+            HStack {
+                Text("Downloads").font(.system(size: 11, weight: .semibold))
+                Spacer()
+                if downloads.isBusy {
+                    Button("Cancel All") { downloads.cancelAll() }.controlSize(.small)
+                } else {
+                    Button("Clear") { downloads.clearFinished() }.controlSize(.small)
+                }
+            }
+            .padding(.horizontal, 14)
+            .frame(height: 28)
+            ScrollView {
+                VStack(spacing: 0) {
+                    ForEach(downloads.items) { item in
+                        DownloadRow(item: item, cancel: { downloads.cancel(item.id) })
+                    }
+                }
+            }
+            .frame(maxHeight: 132)
+        }
     }
 
     // MARK: Bottom bars
@@ -223,10 +272,54 @@ struct BrowseView: View {
 
     // MARK: Actions
 
-    /// Opens the first selected folder, or a link, which is tried as a folder.
-    private func openFirst(of names: Set<RemoteEntry.ID>) {
-        guard let entry = visible.first(where: { names.contains($0.id) }), entry.kind != .file else { return }
-        browse.enter(folderNamed: entry.name)
+    /// Double-click or Return: open a folder (or a link, which is tried as one), or download the files.
+    private func activate(_ ids: Set<RemoteEntry.ID>) {
+        let chosen = visible.filter { ids.contains($0.id) }
+        if let place = chosen.first(where: { $0.kind != .file }) {
+            browse.enter(folderNamed: place.name)
+        } else {
+            download(chosen, askingWhere: false)
+        }
+    }
+
+    /// The selected items that can be downloaded: files, and links, which usually point at files.
+    private var selectedFiles: [RemoteEntry] {
+        visible.filter { selection.contains($0.id) && $0.kind != .folder }
+    }
+
+    private func download(_ files: [RemoteEntry], askingWhere: Bool) {
+        guard !files.isEmpty else { return }
+        let directory: URL
+        if askingWhere {
+            guard let chosen = Self.chooseDownloadFolder() else { return }
+            directory = chosen
+        } else {
+            directory = Self.downloadsFolder
+        }
+        model.downloads.download(files, in: browse.path, from: browse, to: directory)
+    }
+
+    private static var downloadsFolder: URL {
+        FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first
+            ?? FileManager.default.homeDirectoryForCurrentUser
+    }
+
+    private static let lastFolderKey = "browse.lastDownloadFolder"
+
+    /// Asks where to save, starting from the folder used last time.
+    private static func chooseDownloadFolder() -> URL? {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.canCreateDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.prompt = "Download"
+        panel.message = "Choose where to save the files"
+        let last = UserDefaults.standard.string(forKey: lastFolderKey).map { URL(fileURLWithPath: $0) }
+        panel.directoryURL = last ?? downloadsFolder
+        guard panel.runModal() == .OK, let url = panel.url else { return nil }
+        UserDefaults.standard.set(url.path, forKey: lastFolderKey)
+        return url
     }
 
     private func drop(_ urls: [URL]) -> Bool {
@@ -243,6 +336,88 @@ struct BrowseView: View {
         case .folder: "folder.fill"
         case .file: "doc"
         case .link: "arrow.turn.up.right"
+        }
+    }
+}
+
+/// One download in the Browse window's list.
+private struct DownloadRow: View {
+    let item: DownloadModel.Item
+    let cancel: () -> Void
+
+    var body: some View {
+        HStack(spacing: 10) {
+            icon.frame(width: 18)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(item.fileName).font(.system(size: 12)).lineLimit(1).truncationMode(.middle)
+                if item.state == .downloading, item.totalBytes > 0 {
+                    ProgressView(value: item.fraction).controlSize(.small)
+                }
+                Text(detail)
+                    .font(.system(size: 11).monospacedDigit())
+                    .foregroundStyle(isFailure ? Color.red : Color.secondary)
+                    .lineLimit(2)
+            }
+            Spacer(minLength: 0)
+            trailing
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 5)
+        .accessibilityElement(children: .combine)
+    }
+
+    private var isFailure: Bool {
+        if case .failed = item.state { true } else { false }
+    }
+
+    @ViewBuilder
+    private var icon: some View {
+        switch item.state {
+        case .waiting, .downloading:
+            Image(systemName: "arrow.down.circle").foregroundStyle(Color.accentColor)
+        case .done:
+            Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
+        case .failed:
+            Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.red)
+        case .cancelled:
+            Image(systemName: "slash.circle").foregroundStyle(.secondary)
+        }
+    }
+
+    private var detail: String {
+        switch item.state {
+        case .waiting:
+            return item.totalBytes > 0 ? "\(Format.bytes(item.totalBytes)) · Waiting" : "Waiting"
+        case .downloading:
+            if item.totalBytes > 0 { return "\(Format.bytes(item.receivedBytes)) of \(Format.bytes(item.totalBytes))" }
+            return Format.bytes(item.receivedBytes)
+        case .done(let url):
+            return "Saved in \(url.deletingLastPathComponent().lastPathComponent)"
+        case .failed(let message):
+            return message
+        case .cancelled:
+            return "Cancelled"
+        }
+    }
+
+    @ViewBuilder
+    private var trailing: some View {
+        switch item.state {
+        case .waiting, .downloading:
+            Button(action: cancel) {
+                Image(systemName: "xmark")
+                    .font(.system(size: 9, weight: .bold))
+                    .frame(width: 22, height: 22)
+                    .background(Circle().fill(Color.primary.opacity(0.08)))
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(.secondary)
+            .accessibilityLabel("Cancel download")
+        case .done(let url):
+            Button("Show in Finder") { NSWorkspace.shared.activateFileViewerSelecting([url]) }
+                .controlSize(.small)
+        case .failed, .cancelled:
+            EmptyView()
         }
     }
 }

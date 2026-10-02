@@ -154,21 +154,17 @@ struct PopoverView: View {
         }
     }
 
-    /// The server buttons on the left and Quit on the right. With Cancel All and Clear in the list heading,
-    /// the row has room for them at every state.
+    /// Change Folder on the left, Browse centered between it and Quit on the right. With Cancel All and Clear
+    /// in the list heading, the row has room for all three at every state.
     private var footer: some View {
         HStack {
-            folderButtons
+            if model.config != nil {
+                FooterButton(title: "Change Folder") { model.isChoosingFolder = true }
+                Spacer()
+                FooterButton(title: "Browse", action: openBrowse)
+            }
             Spacer()
             FooterButton(title: "Quit DropUp") { NSApp.terminate(nil) }
-        }
-    }
-
-    @ViewBuilder
-    private var folderButtons: some View {
-        if model.config != nil {
-            FooterButton(title: "Change Folder") { model.isChoosingFolder = true }
-            FooterButton(title: "Browse", action: openBrowse)
         }
     }
 }

@@ -233,6 +233,74 @@ final class SFTPSession: ServerSession, @unchecked Sendable {
         }
     }
 
+    /// Reads are pipelined like uploads: a single request at a time is slow on high-latency links.
+    private static let readSize: UInt32 = 32_000
+    private static let readsInFlight = 16
+
+    func download(remotePath: String, to fileURL: URL, progress: @escaping @Sendable (Int64) -> Void) async throws {
+        let file: SFTPFile
+        do {
+            file = try await sftp.openFile(filePath: remotePath, flags: .read)
+        } catch {
+            throw Self.map(error)
+        }
+
+        do {
+            let size = try await file.readAttributes().size
+            guard FileManager.default.createFile(atPath: fileURL.path, contents: nil) else {
+                throw CocoaError(.fileWriteUnknown, userInfo: [NSFilePathErrorKey: fileURL.path])
+            }
+            let output = try FileHandle(forWritingTo: fileURL)
+            defer { try? output.close() }
+
+            var received: Int64 = 0
+            try await withThrowingTaskGroup(of: (UInt64, UInt32, ByteBuffer).self) { group in
+                var nextOffset: UInt64 = 0
+                var followUps: [(offset: UInt64, length: UInt32)] = []
+                var inFlight = 0
+                var sawEnd = false
+                while true {
+                    try Task.checkCancellation()
+                    while inFlight < Self.readsInFlight, !sawEnd {
+                        let request: (offset: UInt64, length: UInt32)
+                        if !followUps.isEmpty {
+                            request = followUps.removeFirst()
+                        } else if let size, nextOffset >= size {
+                            break
+                        } else {
+                            request = (nextOffset, Self.readSize)
+                            nextOffset += UInt64(Self.readSize)
+                        }
+                        group.addTask { (request.offset, request.length, try await file.read(from: request.offset, length: request.length)) }
+                        inFlight += 1
+                    }
+                    guard inFlight > 0, let (offset, length, data) = try await group.next() else { break }
+                    inFlight -= 1
+                    let count = data.readableBytes
+                    if count == 0 {
+                        sawEnd = true
+                        continue
+                    }
+                    try output.seek(toOffset: offset)
+                    try output.write(contentsOf: Data(data.readableBytesView))
+                    received += Int64(count)
+                    progress(received)
+                    // A server may answer with less than asked. Ask again for the rest.
+                    if count < Int(length), size.map({ offset + UInt64(count) < $0 }) ?? true {
+                        followUps.append((offset + UInt64(count), length - UInt32(count)))
+                    }
+                }
+            }
+            if let size, received < Int64(size) {
+                throw UploaderError.connectionFailed("The file ended early on the server.")
+            }
+            try await file.close()
+        } catch {
+            try? await file.close()
+            throw error is CocoaError ? error : Self.map(error)
+        }
+    }
+
     func deleteFile(atPath remotePath: String) async throws {
         do {
             try await sftp.remove(at: remotePath)

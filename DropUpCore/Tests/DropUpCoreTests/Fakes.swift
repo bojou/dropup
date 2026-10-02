@@ -14,6 +14,10 @@ final class FakeSession: ServerSession, @unchecked Sendable {
     private var _listingsRunning = 0
     private var _mostListingsAtOnce = 0
     private var _listFailures: [any Error]
+    private var _downloads: [String] = []
+    private let files: [String: Data]
+    private let downloadError: (any Error)?
+    private let hangAfterWritingDownload: Bool
     private let error: (any Error)?
     private let hangUntilCancelled: Bool
     private let hangAfterCreatingFile: Bool
@@ -26,6 +30,9 @@ final class FakeSession: ServerSession, @unchecked Sendable {
 
     /// - Parameters:
     ///   - entries: what `listEntries` returns for each folder path.
+    ///   - files: what `download` serves for each remote path. A path not listed is refused with 550.
+    ///   - downloadError: makes `download` fail after the server agreed to send.
+    ///   - hangAfterWritingDownload: writes the first half of the file, then waits for cancellation.
     ///   - listFailures: errors for the first `listEntries` calls, one per call, before it starts answering.
     ///   - hangUntilCancelled: waits for cancellation before the server has created the file.
     ///   - hangAfterCreatingFile: creates the file, then waits for cancellation (a half-sent upload).
@@ -38,6 +45,9 @@ final class FakeSession: ServerSession, @unchecked Sendable {
         folders: [String: [String]] = [:],
         entries: [String: [RemoteEntry]] = [:],
         listFailures: [any Error] = [],
+        files: [String: Data] = [:],
+        downloadError: (any Error)? = nil,
+        hangAfterWritingDownload: Bool = false,
         error: (any Error)? = nil,
         hangUntilCancelled: Bool = false,
         hangAfterCreatingFile: Bool = false,
@@ -49,6 +59,9 @@ final class FakeSession: ServerSession, @unchecked Sendable {
         _existing = existing
         self.folders = folders
         self.entries = entries
+        self.files = files
+        self.downloadError = downloadError
+        self.hangAfterWritingDownload = hangAfterWritingDownload
         _listFailures = listFailures
         self.error = error
         self.hangUntilCancelled = hangUntilCancelled
@@ -64,6 +77,8 @@ final class FakeSession: ServerSession, @unchecked Sendable {
     /// Remote paths in the order they were deleted.
     var deletions: [String] { lock.withLock { _deletions } }
     var closeCount: Int { lock.withLock { _closeCount } }
+    /// Remote paths in the order downloads started.
+    var downloads: [String] { lock.withLock { _downloads } }
     var listingCount: Int { lock.withLock { _listings } }
 
     /// Makes the next `listEntries` call fail with `error`.
@@ -109,6 +124,20 @@ final class FakeSession: ServerSession, @unchecked Sendable {
         let size = Int64((try? Data(contentsOf: fileURL).count) ?? 0)
         progress(size / 2)
         progress(size)
+    }
+
+    func download(remotePath: String, to fileURL: URL, progress: @escaping @Sendable (Int64) -> Void) async throws {
+        lock.withLock { _downloads.append(remotePath) }
+        guard let data = files[remotePath] else {
+            throw UploaderError.serverRejected(code: 550, message: "No such file")
+        }
+        let half = data.count / 2
+        try data.prefix(half).write(to: fileURL)
+        progress(Int64(half))
+        if hangAfterWritingDownload { try await Self.hang() }
+        if let downloadError { throw downloadError }
+        try data.write(to: fileURL)
+        progress(Int64(data.count))
     }
 
     func deleteFile(atPath remotePath: String) async throws {

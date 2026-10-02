@@ -46,6 +46,10 @@ final class FakeFTPServer: ByteStreamOpener, @unchecked Sendable {
         lock.withLock { files[path] = Data(contents.utf8) }
     }
 
+    func seed(_ path: String, data: Data) {
+        lock.withLock { files[path] = data }
+    }
+
     func file(_ path: String) -> Data? {
         lock.withLock { files[path] }
     }
@@ -125,6 +129,12 @@ final class FakeFTPServer: ByteStreamOpener, @unchecked Sendable {
             if readOnlyPaths.contains(argument) { return "553 Permission denied" }
             storingPath = argument
             return "150 Opening data connection"
+        case "RETR":
+            guard let dataStream else { return "425 Use PASV first" }
+            guard let contents = files[argument] else { return "550 No such file" }
+            dataStream.toSend = contents
+            reply("150 Opening data connection")
+            return "226 Transfer complete"
         case "DELE":
             return files.removeValue(forKey: argument) != nil ? "250 Deleted" : "550 No such file"
         case "MLSD", "LIST":

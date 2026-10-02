@@ -142,6 +142,96 @@ struct RealServerTests {
     }
 
     @Test(.enabled(if: RealServerTests.enabled), arguments: [TransferProtocol.ftp, .sftp])
+    func downloadsFilesIntact(_ transferProtocol: TransferProtocol) async throws {
+        // A multi-chunk random file, an empty file and a name with spaces and unicode, put on the server directly.
+        var generator = SystemRandomNumberGenerator()
+        let big = Data((0..<3_500_000).map { _ in UInt8.random(in: 0...255, using: &generator) })
+        let names = [uniqueName(), uniqueName("txt"), "Bericht – Größe \(UUID().uuidString.prefix(6)).txt"]
+        let contents = [big, Data(), Data("hej".utf8)]
+        for (name, data) in zip(names, contents) {
+            try data.write(to: URL(fileURLWithPath: Self.root! + "/drops/\(name)"))
+        }
+        defer { for name in names { try? FileManager.default.removeItem(atPath: Self.root! + "/drops/\(name)") } }
+        let destination = FileManager.default.temporaryDirectory.appendingPathComponent("dl-\(UUID().uuidString.prefix(8))")
+        try FileManager.default.createDirectory(at: destination, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: destination) }
+
+        let queue = DownloadQueue(connectors: connectors(), progressInterval: 0)
+        await queue.enqueue(
+            zip(names, contents).map { RemoteDownload(remotePath: "/drops/\($0)", size: Int64($1.count)) },
+            from: config(transferProtocol), password: "secret", into: destination
+        )
+        await queue.waitUntilIdle()
+        await queue.finish()
+        var events: [DownloadEvent] = []
+        for await event in queue.events { events.append(event) }
+
+        #expect(!events.contains { if case .failed = $0 { true } else { false } })
+        for (name, data) in zip(names, contents) {
+            #expect(FileManager.default.contents(atPath: destination.appendingPathComponent(name).path) == data)
+        }
+        let fractions = events.compactMap { event -> Double? in
+            if case .progress(_, let progress) = event, progress.totalBytes == Int64(big.count) { progress.fraction } else { nil }
+        }
+        #expect(fractions == fractions.sorted())
+        #expect(fractions.last == 1)
+        #expect(try FileManager.default.contentsOfDirectory(atPath: destination.path).count == 3)
+    }
+
+    @Test(.enabled(if: RealServerTests.enabled), arguments: [TransferProtocol.ftp, .sftp])
+    func downloadingAMissingFileFailsPlainly(_ transferProtocol: TransferProtocol) async throws {
+        let destination = FileManager.default.temporaryDirectory.appendingPathComponent("dl-\(UUID().uuidString.prefix(8))")
+        try FileManager.default.createDirectory(at: destination, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: destination) }
+
+        let queue = DownloadQueue(connectors: connectors(), progressInterval: 0)
+        await queue.enqueue([RemoteDownload(remotePath: "/drops/none-\(UUID().uuidString.prefix(6)).txt")], from: config(transferProtocol), password: "secret", into: destination)
+        await queue.waitUntilIdle()
+        await queue.finish()
+        var events: [DownloadEvent] = []
+        for await event in queue.events { events.append(event) }
+
+        #expect(events.contains { if case .failed = $0 { true } else { false } })
+        #expect(try FileManager.default.contentsOfDirectory(atPath: destination.path).isEmpty)
+    }
+
+    @Test(.enabled(if: RealServerTests.enabled), arguments: [TransferProtocol.ftp, .sftp])
+    func cancellingADownloadRemovesThePartialFile(_ transferProtocol: TransferProtocol) async throws {
+        // A sparse 512 MB file on the server: too big to finish before the cancel, cheap to create and read.
+        let name = uniqueName()
+        let remote = Self.root! + "/drops/\(name)"
+        #expect(FileManager.default.createFile(atPath: remote, contents: nil))
+        let handle = try FileHandle(forWritingTo: URL(fileURLWithPath: remote))
+        try handle.truncate(atOffset: 512 * 1024 * 1024)
+        try handle.close()
+        defer { try? FileManager.default.removeItem(atPath: remote) }
+        let destination = FileManager.default.temporaryDirectory.appendingPathComponent("dl-\(UUID().uuidString.prefix(8))")
+        try FileManager.default.createDirectory(at: destination, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: destination) }
+
+        let queue = DownloadQueue(connectors: connectors(), progressInterval: 0)
+        let ids = await queue.enqueue([RemoteDownload(remotePath: "/drops/\(name)", size: 512 * 1024 * 1024)], from: config(transferProtocol), password: "secret", into: destination)
+        // Wait until part of the file is on disk, then cancel.
+        var partial = 0
+        for _ in 0..<2000 where partial == 0 {
+            try await Task.sleep(nanoseconds: 5_000_000)
+            for file in (try? FileManager.default.contentsOfDirectory(atPath: destination.path)) ?? [] {
+                let attributes = try? FileManager.default.attributesOfItem(atPath: destination.appendingPathComponent(file).path)
+                partial = max(partial, (attributes?[.size] as? NSNumber)?.intValue ?? 0)
+            }
+        }
+        #expect(partial > 0)
+        await queue.cancel(ids[0])
+        await queue.waitUntilIdle()
+        await queue.finish()
+        var events: [DownloadEvent] = []
+        for await event in queue.events { events.append(event) }
+
+        #expect(events.contains(.cancelled(id: ids[0])))
+        #expect(try FileManager.default.contentsOfDirectory(atPath: destination.path).isEmpty)
+    }
+
+    @Test(.enabled(if: RealServerTests.enabled), arguments: [TransferProtocol.ftp, .sftp])
     func emptyFileUploads(_ transferProtocol: TransferProtocol) async throws {
         let name = uniqueName("txt")
         let local = FileManager.default.temporaryDirectory.appendingPathComponent(name)
