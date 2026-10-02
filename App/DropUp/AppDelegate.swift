@@ -4,12 +4,15 @@ import UserNotifications
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDelegate {
-    private let model = AppModel()
+    // Created on first use, which is after the install check in applicationDidFinishLaunching.
+    private lazy var model = AppModel()
     private lazy var windows = WindowCoordinator(model: model)
     private var statusItem: StatusItemController?
     private var dropPanel: DropPanelController?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // First, before anything reads settings: a reinstall must not inherit the old connection.
+        InstallReset.reconcile()
         UNUserNotificationCenter.current().delegate = self
         let statusItem = StatusItemController(model: model, onOpenSettings: { [weak self] in self?.windows.showSettings() })
         self.statusItem = statusItem
