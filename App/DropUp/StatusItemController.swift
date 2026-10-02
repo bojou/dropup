@@ -12,6 +12,8 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
     private let onOpenSettings: () -> Void
     private let popover = NSPopover()
     private let badge = CALayer()
+    private var clickAwayMonitor: Any?
+    private var escapeMonitor: Any?
 
     init(model: AppModel, onOpenSettings: @escaping () -> Void) {
         self.model = model
@@ -108,8 +110,37 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
         } else if let button = statusItem.button {
             NSApp.activate()
             popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
+            popover.contentViewController?.view.window?.makeKey()
             model.popoverVisibilityChanged(true)
+            startWatchingForDismissal()
         }
+    }
+
+    /// `.transient` only closes the popover when this app is the active one, and a menubar app often
+    /// isn't. So also close it on any click in another app, and on Escape.
+    private func startWatchingForDismissal() {
+        stopWatchingForDismissal()
+        clickAwayMonitor = NSEvent.addGlobalMonitorForEvents(
+            matching: [.leftMouseDown, .rightMouseDown, .otherMouseDown]
+        ) { [weak self] _ in
+            Task { @MainActor in self?.popover.performClose(nil) }
+        }
+        escapeMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            guard event.keyCode == 53 else { return event }
+            let closed = MainActor.assumeIsolated { () -> Bool in
+                guard let self, self.popover.isShown else { return false }
+                self.popover.performClose(nil)
+                return true
+            }
+            return closed ? nil : event
+        }
+    }
+
+    private func stopWatchingForDismissal() {
+        if let clickAwayMonitor { NSEvent.removeMonitor(clickAwayMonitor) }
+        if let escapeMonitor { NSEvent.removeMonitor(escapeMonitor) }
+        clickAwayMonitor = nil
+        escapeMonitor = nil
     }
 
     private func showMenu() {
@@ -129,6 +160,7 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
     }
 
     func popoverDidClose(_ notification: Notification) {
+        stopWatchingForDismissal()
         model.popoverVisibilityChanged(false)
         render()
     }

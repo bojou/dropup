@@ -1,0 +1,21 @@
+name: Notary status
+
+# Asks Apple how the notarization requests from this team are going, so a slow first submission can be
+# checked in about a minute instead of holding a runner open. Run it by hand from the Actions tab.
+# Needs the same NOTARY_* secrets as the Release workflow. Nothing secret is printed.
+
+on:
+  workflow_dispatch:
+
+jobs:
+  status:
+    runs-on: macos-15
+    timeout-minutes: 10
+    steps:
+      - name: Recent notarization requests
+        env:
+          NOTARY_APPLE_ID: ${{ secrets.NOTARY_APPLE_ID }}
+          NOTARY_TEAM_ID: ${{ secrets.NOTARY_TEAM_ID }}
+          NOTARY_PASSWORD: ${{ secrets.NOTARY_PASSWORD }}
+        run: |
+          xcrun notarytool history --apple-id "$NOTARY_APPLE_ID" --team-id "$NOTARY_TEAM_ID" --password "$NOTARY_PASSWORD"
