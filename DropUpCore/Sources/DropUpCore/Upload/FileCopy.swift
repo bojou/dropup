@@ -45,9 +45,11 @@ extension FileOperations {
     /// Copies `entries` from `folder` into `destination`, on the same server. Folders go with everything inside them.
     ///
     /// Neither FTP nor SFTP can copy on the server, so every file comes down to `scratch` on this Mac and goes back up.
-    /// Nothing is replaced: a name that is taken in `destination` (which includes copying into the same folder) gets
-    /// `copy` added, like Finder does. Links are not copied, and neither are links inside folders (they are counted
-    /// in `skipped`), so a link can never lead the copy somewhere else.
+    /// A name that is taken in `destination` (which includes copying into the same folder) gets `copy` added, like
+    /// Finder does. The exception is `policy == .replace` with a file copied into another folder where a file already
+    /// has its name: the new copy is sent under a hidden name first and then takes that file's place (see `replaceFile`).
+    /// Links are not copied, and neither are links inside folders (they are counted in `skipped`), so a link can never
+    /// lead the copy somewhere else.
     ///
     /// A copy that stops halfway leaves what was already copied, except for the file that was being uploaded, which
     /// `leftBehind` is asked to remove because the session that sent it can't be trusted to.
@@ -61,6 +63,7 @@ extension FileOperations {
         _ entries: [RemoteEntry],
         from folder: String,
         to destination: String,
+        policy: ConflictPolicy = .keepBoth,
         session: any ServerSession,
         scratch: URL,
         began: @Sendable () -> Void = {},
@@ -71,13 +74,17 @@ extension FileOperations {
         let source = RemotePath.normalizedDirectory(folder)
         let target = RemotePath.normalizedDirectory(destination)
 
-        var taken = Set(try await session.listEntries(atPath: target).map(\.name))
+        var present = Dictionary(try await session.listEntries(atPath: target).map { ($0.name, $0.kind) }, uniquingKeysWith: { first, _ in first })
         var result = FileOperationResult()
+        var record = CopyRecord(sources: [], from: source, to: target, files: [], folders: [])
         for entry in entries {
             try Task.checkCancellation()
             let from = RemotePath.appending(entry.name, to: source)
             let isFolder = entry.kind == .folder
-            let name = taken.contains(entry.name) ? RemoteFileName.copyName(entry.name, isFolder: isFolder, among: taken) : entry.name
+            let replacing = policy == .replace && source != target && entry.kind == .file && present[entry.name] == .file
+            let name = present[entry.name] == nil || replacing
+                ? entry.name
+                : RemoteFileName.copyName(entry.name, isFolder: isFolder, among: present.keys)
             let to = RemotePath.appending(name, to: target)
             var started = false
             do {
@@ -86,7 +93,21 @@ extension FileOperations {
                     throw FileOperationError.cantCopyLink
                 case .file:
                     let size = entry.size ?? 0
-                    try await copyFile(from: from, to: to, label: entry.name, offset: 0, total: size * 2, size: size, session: session, scratch: scratch, began: began, leftBehind: leftBehind, progress: progress)
+                    // A replacement is sent next to the file it will replace, so the old file stays whole until the new one is complete.
+                    let sendTo = replacing ? RemotePath.appending(".\(name).copying-\(UUID().uuidString.prefix(8))", to: target) : to
+                    try await copyFile(from: from, to: sendTo, label: entry.name, offset: 0, total: size * 2, size: size, session: session, scratch: scratch, began: began, leftBehind: leftBehind, progress: progress)
+                    if replacing {
+                        do {
+                            try await replaceFile(at: to, with: sendTo, session: session)
+                        } catch let left as LeftOldCopy {
+                            result.leftOver.append(left.path)
+                        } catch {
+                            await Task.detached { try? await session.deleteFile(atPath: sendTo) }.value
+                            throw error
+                        }
+                        result.replaced += 1
+                    }
+                    record.files.append(to)
                 case .folder:
                     if target == from || target.hasPrefix(from + "/") { throw FileOperationError.copiedIntoItself }
                     let tree = try await RemoteTree.walk(from, session: session)
@@ -95,9 +116,11 @@ extension FileOperations {
                     began()
                     try await session.makeDirectory(atPath: to)
                     started = true
+                    record.folders.append(to)
                     for folder in tree.directories {
                         try Task.checkCancellation()
                         try await wrappedInside(folder) { try await session.makeDirectory(atPath: to + "/" + folder) }
+                        record.folders.append(to + "/" + folder)
                     }
                     var offset: Int64 = 0
                     progress(CopyProgress(name: entry.name, done: 0, total: total))
@@ -119,22 +142,25 @@ extension FileOperations {
                                 progress: progress
                             )
                         }
+                        record.files.append(to + "/" + file.relativePath)
                         offset += size * 2
                     }
                 }
-                taken.insert(name)
+                present[name] = entry.kind
+                record.sources.append(entry)
                 result.completed += 1
             } catch let stop as StopCopying {
                 throw stop.error
             } catch {
                 var item = try failure(for: entry, error)
                 if started {
-                    taken.insert(name)
+                    present[name] = .folder
                     item.message += " Part of it was copied before this stopped."
                 }
                 result.failures.append(item)
             }
         }
+        result.change = record.sources.isEmpty ? nil : .copied(record)
         return result
     }
 

@@ -3,7 +3,8 @@ import Observation
 import DropUpCore
 
 /// What the Browse window shows: one folder of the server at a time, reached through a connection that stays open.
-/// It also carries out the changes the window offers (new folder, rename, move, delete) and refreshes the listing afterwards.
+/// It also carries out the changes the window offers (new folder, rename, move, copy, delete), refreshes the listing
+/// afterwards, and remembers what can be undone.
 @MainActor
 @Observable
 final class BrowseModel {
@@ -38,6 +39,9 @@ final class BrowseModel {
     private(set) var clipboard: Clipboard?
     /// Names the window should select once the folder on screen has loaded (the folder just made, the item just renamed).
     var selectionRequest: Set<String>?
+    /// Changes Undo can take back, the latest last, and changes Redo can do again. They live as long as the window.
+    private(set) var undoStack: [BrowseChange] = []
+    private(set) var redoStack: [BrowseChange] = []
     /// The server this window shows, and the login for it, kept so downloads go where the window is looking.
     let config: ServerConfig
     let password: String
@@ -47,23 +51,37 @@ final class BrowseModel {
     let credentialKey: String
 
     @ObservationIgnored private let session: BrowseSession
+    /// What to do when a move or copy lands on a name that is taken. Read each time, so a change in Settings applies at once.
+    @ObservationIgnored private let conflictPolicy: @MainActor () -> ConflictPolicy
     @ObservationIgnored private var task: Task<Void, Never>?
     @ObservationIgnored private var operationTask: Task<Void, Never>?
 
-    init(config: ServerConfig, password: String, session: BrowseSession) {
+    init(
+        config: ServerConfig,
+        password: String,
+        session: BrowseSession,
+        conflictPolicy: @escaping @MainActor () -> ConflictPolicy = { .keepBoth }
+    ) {
         self.config = config
         self.password = password
         let start = RemotePath.normalizedDirectory(config.remoteDirectory)
         self.path = start
-        self.history = FolderHistory(start: start)
+        // Back can climb out of the starting folder, one enclosing folder at a time.
+        self.history = FolderHistory(start: start, includingParents: true)
         self.serverName = config.shownName ?? config.host
         self.credentialKey = config.credentialKey
         self.session = session
+        self.conflictPolicy = conflictPolicy
     }
 
     var canGoBack: Bool { history.canGoBack }
     var canGoForward: Bool { history.canGoForward }
     var isBusy: Bool { operation != nil }
+    var canUndo: Bool { !undoStack.isEmpty && !isBusy }
+    var canRedo: Bool { !redoStack.isEmpty && !isBusy }
+    /// "Move “a.txt”", for the Undo button's tooltip.
+    var undoTitle: String? { undoStack.last?.title }
+    var redoTitle: String? { redoStack.last?.title }
 
     // MARK: Navigating
 
@@ -165,16 +183,16 @@ final class BrowseModel {
     func makeFolder(named name: String) {
         let folder = path
         run("Creating folder…", selecting: name.trimmingCharacters(in: .whitespacesAndNewlines)) { session in
-            try await session.makeFolder(named: name, in: folder)
-            return nil
+            let change = try await session.makeFolder(named: name, in: folder)
+            return ("created", FileOperationResult(completed: 1, change: change))
         }
     }
 
     func rename(_ entry: RemoteEntry, to newName: String) {
         let folder = path
         run("Renaming…", selecting: newName.trimmingCharacters(in: .whitespacesAndNewlines)) { session in
-            try await session.rename(entry, to: newName, in: folder)
-            return nil
+            let change = try await session.rename(entry, to: newName, in: folder)
+            return ("renamed", FileOperationResult(completed: change == nil ? 0 : 1, change: change))
         }
     }
 
@@ -185,8 +203,9 @@ final class BrowseModel {
 
     func move(_ items: [RemoteEntry], from folder: String, to destination: String) {
         guard !items.isEmpty else { return }
+        let policy = conflictPolicy()
         run("Moving \(Self.count(items))…") { session in
-            let result = try await session.move(items, from: folder, to: destination)
+            let result = try await session.move(items, from: folder, to: destination, policy: policy)
             return ("moved", result)
         }
     }
@@ -237,24 +256,78 @@ final class BrowseModel {
 
     private func copy(_ items: [RemoteEntry], from folder: String, to destination: String) {
         guard !items.isEmpty else { return }
-        run("Copying \(Self.count(items))…", canCancel: true) { [weak self] session in
-            let result = try await session.copy(items, from: folder, to: destination) { progress in
-                Task { @MainActor in
-                    self?.operation?.detail = progress.name
-                    self?.operation?.fraction = progress.total > 0 ? progress.fraction : nil
-                }
-            }
+        let policy = conflictPolicy()
+        let report = copyReporter()
+        run("Copying \(Self.count(items))…", canCancel: true) { session in
+            let result = try await session.copy(items, from: folder, to: destination, policy: policy, progress: report)
             return ("copied", result)
+        }
+    }
+
+    // MARK: Undo and redo
+
+    /// Takes back the latest change. Deleting can't be taken back, so it isn't in the list.
+    func undo() {
+        guard canUndo, let change = undoStack.last else { return }
+        run("Undoing \(change.title)…", canCancel: Self.isCopy(change), role: .undoing) { session in
+            let result = try await session.undo(change)
+            return ("undone", result)
+        }
+    }
+
+    /// Does the change that Undo took back again.
+    func redo() {
+        guard canRedo, let change = redoStack.last else { return }
+        let policy = conflictPolicy()
+        let report = copyReporter()
+        run("Redoing \(change.title)…", canCancel: Self.isCopy(change), role: .redoing) { session in
+            let result = try await session.redo(change, policy: policy, progress: report)
+            return ("redone", result)
+        }
+    }
+
+    private static func isCopy(_ change: BrowseChange) -> Bool {
+        if case .copied = change { return true }
+        return false
+    }
+
+    private static let undoLimit = 50
+
+    /// Only the latest changes are kept. A new change ends whatever Redo could have repeated, as in any editor.
+    private func record(_ change: BrowseChange) {
+        undoStack.append(change)
+        if undoStack.count > Self.undoLimit { undoStack.removeFirst(undoStack.count - Self.undoLimit) }
+        redoStack.removeAll()
+    }
+
+    /// A replaced file can't be brought back, so changes made before it could no longer be undone in order.
+    private func forgetHistory() {
+        undoStack.removeAll()
+        redoStack.removeAll()
+    }
+
+    /// Updates the progress strip as a copy goes on.
+    private func copyReporter() -> @Sendable (CopyProgress) -> Void {
+        { [weak self] progress in
+            Task { @MainActor in
+                self?.operation?.detail = progress.name
+                self?.operation?.fraction = progress.total > 0 ? progress.fraction : nil
+            }
         }
     }
 
     // MARK: Running a change
 
+    private enum HistoryRole { case fresh, undoing, redoing }
+
     /// Runs one change at a time, then reloads the folder on screen whatever happened, so the window shows the truth.
+    /// `role` says how the change fits the undo list: a new change is added to it, while undoing or redoing moves
+    /// the latest entry across.
     private func run(
         _ title: String,
         selecting name: String? = nil,
         canCancel: Bool = false,
+        role: HistoryRole = .fresh,
         _ work: @escaping (BrowseSession) async throws -> (verb: String, result: FileOperationResult)?
     ) {
         guard operation == nil else { return }
@@ -263,12 +336,37 @@ final class BrowseModel {
         let folder = path
         operationTask = Task {
             var shouldSelect = name
+            var showFolder: String?
             do {
                 if let outcome = try await work(session) {
-                    problem = Self.describe(outcome.result, verb: outcome.verb)
-                    if outcome.result.completed == 0 { shouldSelect = nil }
+                    let result = outcome.result
+                    problem = result.summary(verb: outcome.verb)
+                    if result.completed == 0 { shouldSelect = nil }
                     // Cut items have left where they were once they are moved or deleted. Copied ones can be pasted again.
-                    if ["moved", "deleted"].contains(outcome.verb), outcome.result.isComplete, clipboard?.mode == .cut { clipboard = nil }
+                    if ["moved", "deleted"].contains(outcome.verb), result.isComplete, clipboard?.mode == .cut { clipboard = nil }
+                    switch role {
+                    case .fresh:
+                        if result.replaced > 0 {
+                            forgetHistory()
+                        } else if let change = result.change {
+                            record(change)
+                        }
+                    case .undoing:
+                        // Whatever happened, this entry has had its turn. What was taken back can be done again.
+                        if !undoStack.isEmpty { undoStack.removeLast() }
+                        if let undone = result.change {
+                            redoStack.append(undone)
+                            showFolder = undone.folderWhenUndone
+                        }
+                    case .redoing:
+                        if !redoStack.isEmpty { redoStack.removeLast() }
+                        if result.replaced > 0 {
+                            forgetHistory()
+                        } else if let redone = result.change {
+                            undoStack.append(redone)
+                            showFolder = redone.folderWhenDone
+                        }
+                    }
                 }
             } catch is CancellationError {
                 shouldSelect = nil
@@ -279,31 +377,17 @@ final class BrowseModel {
             operation = nil
             operationTask = nil
             if let shouldSelect, path == folder { selectionRequest = [shouldSelect] }
-            reload()
+            // Show where an undo or redo happened, so the person sees what it did. Opening a folder clears the
+            // message, so when there is one to read the window stays where it is.
+            if let showFolder, showFolder != path, problem == nil {
+                go(to: showFolder)
+            } else {
+                reload()
+            }
         }
     }
 
     private static func count(_ items: [RemoteEntry]) -> String {
         items.count == 1 ? "“\(items[0].name)”" : "\(items.count) items"
-    }
-
-    /// Nil when everything went through. Otherwise the first few refusals, one per line.
-    static func describe(_ result: FileOperationResult, verb: String) -> String? {
-        guard !result.failures.isEmpty else {
-            guard result.skipped > 0 else { return nil }
-            return result.skipped == 1
-                ? "Copied. A link inside the folders was left out."
-                : "Copied. \(result.skipped) links inside the folders were left out."
-        }
-        let total = result.completed + result.failures.count
-        let head = total == 1
-            ? "“\(result.failures[0].name)” couldn't be \(verb)."
-            : "\(result.failures.count) of \(total) items couldn't be \(verb)."
-        var lines = [head]
-        for failure in result.failures.prefix(3) {
-            lines.append(total == 1 ? failure.message : "“\(failure.name)”: \(failure.message)")
-        }
-        if result.failures.count > 3 { lines.append("and \(result.failures.count - 3) more.") }
-        return lines.joined(separator: "\n")
     }
 }

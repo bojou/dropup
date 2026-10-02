@@ -59,7 +59,7 @@ struct FileCopyTests {
 
         let result = try await copy([file("a.txt", size: 5)], from: "/drops", to: "/drops", on: server)
 
-        #expect(result == FileOperationResult(completed: 1))
+        #expect(result.withoutChange == FileOperationResult(completed: 1))
         #expect(server.data(at: "/drops/a.txt") == Data("hello".utf8))
         #expect(server.data(at: "/drops/a copy.txt") == Data("hello".utf8))
         #expect(scratchIsEmpty)
@@ -99,7 +99,7 @@ struct FileCopyTests {
 
         let result = try await copy([folder("photos")], from: "/drops", to: "/drops", on: server)
 
-        #expect(result == FileOperationResult(completed: 1, skipped: 1))
+        #expect(result.withoutChange == FileOperationResult(completed: 1, skipped: 1))
         #expect(server.data(at: "/drops/photos copy/a.jpg") == Data("A".utf8))
         #expect(server.data(at: "/drops/photos copy/sub/deep/b.jpg") == Data("BB".utf8))
         #expect(server.exists("/drops/photos copy/empty"))

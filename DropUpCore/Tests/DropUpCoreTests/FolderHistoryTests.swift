@@ -11,6 +11,41 @@ struct FolderHistoryTests {
         #expect(history.previous == nil && history.next == nil)
     }
 
+    @Test func backClimbsOutOfTheStartingFolderOneLevelAtATimeWhenAsked() {
+        var history = FolderHistory(start: "/drops/images/2026/", includingParents: true)
+        #expect(history.current == "/drops/images/2026")
+        #expect(history.canGoBack && !history.canGoForward)
+        #expect(history.previous == "/drops/images")
+
+        history.goBack()
+        #expect(history.current == "/drops/images")
+        history.goBack()
+        history.goBack()
+        #expect(history.current == "/")
+        #expect(!history.canGoBack)
+
+        history.goForward()
+        #expect(history.current == "/drops")
+        history.goForward()
+        history.goForward()
+        #expect(history.current == "/drops/images/2026")
+        #expect(!history.canGoForward)
+    }
+
+    @Test func startingAtTheTopHasNothingToGoBackTo() {
+        #expect(!FolderHistory(start: "/", includingParents: true).canGoBack)
+        #expect(FolderHistory(start: "/drops", includingParents: true).previous == "/")
+    }
+
+    @Test func visitsAfterTheStartComeBeforeTheEnclosingFolders() {
+        var history = FolderHistory(start: "/a/b", includingParents: true)
+        history.visit("/a/b/c")
+        history.goBack()
+        #expect(history.current == "/a/b")
+        history.goBack()
+        #expect(history.current == "/a")
+    }
+
     @Test func backAndForwardRetraceTheVisits() {
         var history = FolderHistory(start: "/")
         history.visit("/a")

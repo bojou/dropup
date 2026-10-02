@@ -9,8 +9,13 @@ public struct FolderHistory: Sendable, Equatable {
     /// How many folders Back can step through.
     private static let limit = 100
 
-    public init(start: String) {
+    /// - Parameter includingParents: lets Back climb out of the starting folder, one enclosing folder at a time,
+    ///   and Forward come down again. A window that opens in a deep folder would otherwise have nowhere to go back to.
+    public init(start: String, includingParents: Bool = false) {
         current = RemotePath.normalizedDirectory(start)
+        if includingParents {
+            back = RemotePath.trail(to: current).dropLast().map(\.path)
+        }
     }
 
     public var previous: String? { back.last }

@@ -37,18 +37,45 @@ public actor BrowseSession {
         return try await perform { try await $0.listEntries(atPath: folder) }
     }
 
-    /// Creates a folder called `name` inside `folder`.
-    public func makeFolder(named name: String, in folder: String) async throws {
-        try await perform { try await FileOperations.makeFolder(named: name, in: folder, session: $0) }
+    /// Creates a folder called `name` inside `folder`, and says how to take that back.
+    @discardableResult
+    public func makeFolder(named name: String, in folder: String) async throws -> BrowseChange {
+        let path = try await perform { try await FileOperations.makeFolder(named: name, in: folder, session: $0) }
+        return .madeFolder(path)
     }
 
-    public func rename(_ entry: RemoteEntry, to newName: String, in folder: String) async throws {
-        try await perform { try await FileOperations.rename(entry, to: newName, in: folder, session: $0) }
+    /// Renames an item, and says how to take that back. Nil when the name was already right.
+    @discardableResult
+    public func rename(_ entry: RemoteEntry, to newName: String, in folder: String) async throws -> BrowseChange? {
+        let move = try await perform { try await FileOperations.rename(entry, to: newName, in: folder, session: $0) }
+        return move.map { .renamed($0) }
     }
 
     /// Moves items into another folder. See `FileOperations.move`.
-    public func move(_ entries: [RemoteEntry], from folder: String, to destination: String) async throws -> FileOperationResult {
-        try await perform { try await FileOperations.move(entries, from: folder, to: destination, session: $0) }
+    public func move(
+        _ entries: [RemoteEntry],
+        from folder: String,
+        to destination: String,
+        policy: ConflictPolicy = .keepBoth
+    ) async throws -> FileOperationResult {
+        try await perform { try await FileOperations.move(entries, from: folder, to: destination, policy: policy, session: $0) }
+    }
+
+    /// Takes a change back. See `FileOperations.undo`.
+    public func undo(_ change: BrowseChange) async throws -> FileOperationResult {
+        try await perform { try await FileOperations.undo(change, session: $0) }
+    }
+
+    /// Does a change again after `undo`. A copy is made again, which takes as long as it did the first time.
+    public func redo(
+        _ change: BrowseChange,
+        policy: ConflictPolicy = .keepBoth,
+        progress: @escaping @Sendable (CopyProgress) -> Void = { _ in }
+    ) async throws -> FileOperationResult {
+        if case .copied(let record) = change {
+            return try await copy(record.sources, from: record.from, to: record.to, policy: policy, progress: progress)
+        }
+        return try await perform { try await FileOperations.redo(change, session: $0) }
     }
 
     /// Deletes items, folders with everything inside. See `FileOperations.delete`.
@@ -61,11 +88,12 @@ public actor BrowseSession {
     }
 
     /// Copies items into another folder, or the same one. See `FileOperations.copy`.
-    /// Files travel through this Mac, so `progress` follows the whole trip. Nothing is replaced.
+    /// Files travel through this Mac, so `progress` follows the whole trip.
     public func copy(
         _ entries: [RemoteEntry],
         from folder: String,
         to destination: String,
+        policy: ConflictPolicy = .keepBoth,
         progress: @escaping @Sendable (CopyProgress) -> Void = { _ in }
     ) async throws -> FileOperationResult {
         let scratch = scratchParent.appendingPathComponent("DropUp-copy-\(UUID().uuidString)", isDirectory: true)
@@ -84,6 +112,7 @@ public actor BrowseSession {
                 entries,
                 from: folder,
                 to: destination,
+                policy: policy,
                 session: session,
                 scratch: scratch,
                 began: { changed.set() },
