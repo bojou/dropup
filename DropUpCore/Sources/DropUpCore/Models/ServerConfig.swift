@@ -76,6 +76,14 @@ extension ServerConfig {
     }
 
     public var isValid: Bool { validationErrors().isEmpty }
+
+    /// The same server and login with another upload folder. The credential key doesn't include the folder,
+    /// so the saved password still applies.
+    public func withRemoteDirectory(_ directory: String) -> ServerConfig {
+        var copy = self
+        copy.remoteDirectory = RemotePath.normalizedDirectory(directory)
+        return copy
+    }
 }
 
 public enum RemotePath {
