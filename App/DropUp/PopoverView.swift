@@ -27,7 +27,7 @@ struct PopoverView: View {
             sectionHeader(activity)
             rows(activity)
             Divider().padding(.horizontal, 4).padding(.vertical, 2)
-            footer(activity)
+            footer
         }
         .padding(10)
         .frame(width: 336)
@@ -131,6 +131,12 @@ struct PopoverView: View {
                         .font(.system(size: 11).monospacedDigit())
                         .fontWeight(.regular)
                 }
+                // These act on the list, so they sit with its heading and leave the footer for the server buttons.
+                if activity.isBusy {
+                    ListButton(title: "Cancel All") { model.cancelAll() }
+                } else {
+                    ListButton(title: "Clear", label: "Clear recent uploads") { model.clearFinished() }
+                }
             }
             .foregroundStyle(.secondary)
             .padding(.horizontal, 6)
@@ -147,24 +153,13 @@ struct PopoverView: View {
         }
     }
 
-    /// One row while the buttons fit the popover's width, two rows when there are too many. A Browse FTP button
-    /// is planned next to Change Folder; add it to `folderButtons` and the layout makes room.
-    private func footer(_ activity: UploadActivity) -> some View {
-        ViewThatFits(in: .horizontal) {
-            HStack {
-                folderButtons
-                queueButtons(activity)
-                Spacer()
-                quitButton
-            }
-            VStack(alignment: .leading, spacing: 0) {
-                HStack { folderButtons; Spacer() }
-                HStack {
-                    queueButtons(activity)
-                    Spacer()
-                    quitButton
-                }
-            }
+    /// The server buttons on the left and Quit on the right. A Browse FTP button goes in `folderButtons`; with
+    /// Cancel All and Clear in the list heading, the row has room for it at every state.
+    private var footer: some View {
+        HStack {
+            folderButtons
+            Spacer()
+            FooterButton(title: "Quit DropUp") { NSApp.terminate(nil) }
         }
     }
 
@@ -173,19 +168,6 @@ struct PopoverView: View {
         if model.config != nil {
             FooterButton(title: "Change Folder") { model.isChoosingFolder = true }
         }
-    }
-
-    @ViewBuilder
-    private func queueButtons(_ activity: UploadActivity) -> some View {
-        if activity.isBusy {
-            FooterButton(title: "Cancel All") { model.cancelAll() }
-        } else if !activity.items.isEmpty {
-            FooterButton(title: "Clear Recent") { model.clearFinished() }
-        }
-    }
-
-    private var quitButton: some View {
-        FooterButton(title: "Quit DropUp") { NSApp.terminate(nil) }
     }
 }
 
@@ -202,6 +184,25 @@ private struct FooterButton: View {
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+    }
+}
+
+/// A small text button in the list heading.
+private struct ListButton: View {
+    let title: String
+    var label: String?
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Text(title)
+                .font(.system(size: 11, weight: .regular))
+                .foregroundStyle(Color.accentColor)
+                .padding(.leading, 6)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(label ?? title)
     }
 }
 
