@@ -262,13 +262,10 @@ private struct GeneralSettings: View {
                     .font(.system(size: 11))
             }
             Section {
-                Picker("Same file name", selection: preference(\.conflictPolicy)) {
+                Picker("When a file already exists", selection: preference(\.conflictPolicy)) {
                     Text("Keep both (add a number)").tag(ConflictPolicy.keepBoth)
                     Text("Replace the existing file").tag(ConflictPolicy.replace)
                 }
-            } footer: {
-                Text("“Same file name” is what happens when the folder already has a file with that name, whether you upload one or move or paste one into it in Browse. A replaced file can’t be brought back.")
-                    .font(.system(size: 11))
             }
             recentSection
             Section {
@@ -290,7 +287,7 @@ private struct GeneralSettings: View {
                 ForEach(preferences.recentLimitChoices, id: \.self) { Text("The last \($0)").tag($0) }
             }
             if !listIsOn {
-                Label("With the list off, failed uploads aren’t listed either, so you may miss them. The menubar icon still shows a cross until you open DropUp, and the notification and the lower sound still happen if you’ve turned them on.", systemImage: "exclamationmark.triangle.fill")
+                Label("Failed uploads won’t be saved either.", systemImage: "exclamationmark.triangle.fill")
                     .font(.system(size: 11))
                     .foregroundStyle(.orange)
             }
@@ -324,9 +321,6 @@ private struct GeneralSettings: View {
             Toggle("Hide file names", isOn: preference(\.hideRecentNames))
         } header: {
             Text("Recent uploads")
-        } footer: {
-            Text("The clearing choices apply while the list is on. Anything but “When DropUp quits” keeps the list when DropUp is closed and opened again. With file names hidden, uploads show as “Uploaded file” or “Uploaded folder” (in notifications too), and file, folder and path names are taken out of error messages.")
-                .font(.system(size: 11))
         }
     }
 
