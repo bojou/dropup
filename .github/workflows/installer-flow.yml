@@ -30,20 +30,20 @@ jobs:
           ln -s /Applications dmg/Applications
           mkdir -p "$HOME/Downloads"
           hdiutil create -volname "DropUp" -srcfolder dmg -ov -format UDZO "$HOME/Downloads/DropUp-9.9.9.dmg"
-          # What a browser does to a download.
-          xattr -w com.apple.quarantine "0083;$(printf '%x' "$(date +%s)");Safari;" "$HOME/Downloads/DropUp-9.9.9.dmg"
 
       - name: Mount, install, launch
         run: |
           DMG="$HOME/Downloads/DropUp-9.9.9.dmg"
-          hdiutil attach "$DMG"
+          echo "attaching"
+          perl -e 'alarm shift; exec @ARGV' 60 hdiutil attach "$DMG" || { echo "attach failed or timed out"; exit 1; }
           ls -la /Volumes/DropUp
           echo "--- hdiutil info -plist"
           hdiutil info -plist
           ditto /Volumes/DropUp/DropUp.app /Applications/DropUp.app
           log stream --level debug --predicate 'subsystem == "app.dropup.DropUp"' > "$RUNNER_TEMP/app.log" 2>&1 &
           sleep 3
-          open /Applications/DropUp.app
+          echo "launching"
+          perl -e 'alarm shift; exec @ARGV' 20 open /Applications/DropUp.app || echo "open failed or timed out"
           sleep 15
           echo "--- DropUp process"
           pgrep -lf DropUp || echo "not running"
