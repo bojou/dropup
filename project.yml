@@ -6,6 +6,9 @@ options:
 packages:
   DropUpCore:
     path: DropUpCore
+  Sparkle:
+    url: https://github.com/sparkle-project/Sparkle
+    from: 2.6.0
 targets:
   DropUp:
     type: application
@@ -17,6 +20,8 @@ targets:
         product: DropUpCore
       - package: DropUpCore
         product: DropUpTransport
+      - package: Sparkle
+        embed: true
     info:
       path: App/DropUp/Info.plist
       properties:
