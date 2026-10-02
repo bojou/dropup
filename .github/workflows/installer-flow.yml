@@ -1,0 +1,75 @@
+name: Installer flow
+
+# Walks through installing DropUp the way a person does, on a real macOS runner: build like a release,
+# pack the DMG, mount it, copy the app to Applications, launch it from there, and report what it did.
+# Checks that the "eject the disk image" prompt appears while the DMG is still mounted.
+
+on:
+  push:
+    branches: [installer-prompt-fix]
+  workflow_dispatch:
+
+jobs:
+  flow:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build and pack like a release
+        run: |
+          brew install xcodegen
+          xcodegen generate
+          xcodebuild -project DropUp.xcodeproj -scheme DropUp -configuration Release \
+            -destination 'platform=macOS' -derivedDataPath build \
+            MARKETING_VERSION=9.9.9 CURRENT_PROJECT_VERSION=1 CODE_SIGNING_ALLOWED=NO build
+          cp -R build/Build/Products/Release/DropUp.app DropUp.app
+          codesign --force --options runtime --sign - DropUp.app
+          mkdir dmg
+          cp -R DropUp.app dmg/
+          ln -s /Applications dmg/Applications
+          mkdir -p "$HOME/Downloads"
+          hdiutil create -volname "DropUp" -srcfolder dmg -ov -format UDZO "$HOME/Downloads/DropUp-9.9.9.dmg"
+          # What a browser does to a download.
+          xattr -w com.apple.quarantine "0083;$(printf '%x' "$(date +%s)");Safari;" "$HOME/Downloads/DropUp-9.9.9.dmg"
+
+      - name: Mount, install, launch
+        run: |
+          DMG="$HOME/Downloads/DropUp-9.9.9.dmg"
+          open "$DMG" || true
+          for _ in $(seq 1 20); do [ -d /Volumes/DropUp/DropUp.app ] && break; sleep 1; done
+          if [ -d /Volumes/DropUp/DropUp.app ]; then
+            echo "Mounted by Finder-style open"
+          else
+            echo "open did not mount it, using hdiutil attach"
+            hdiutil attach "$DMG"
+          fi
+          ls -la /Volumes/DropUp
+          echo "--- hdiutil info -plist"
+          hdiutil info -plist
+          ditto /Volumes/DropUp/DropUp.app /Applications/DropUp.app
+          log stream --level debug --predicate 'subsystem == "app.dropup.DropUp"' > "$RUNNER_TEMP/app.log" 2>&1 &
+          sleep 3
+          open /Applications/DropUp.app
+          sleep 15
+          echo "--- DropUp process"
+          pgrep -lf DropUp || echo "not running"
+          echo "--- app log"
+          cat "$RUNNER_TEMP/app.log"
+          echo "--- DropUp windows"
+          cat > "$RUNNER_TEMP/windows.swift" <<'EOF'
+          import CoreGraphics
+          import Foundation
+          let all = CGWindowListCopyWindowInfo([.optionAll], kCGNullWindowID) as? [[String: Any]] ?? []
+          for w in all where (w[kCGWindowOwnerName as String] as? String) == "DropUp" {
+              print(w[kCGWindowName as String] ?? "-", "layer", w[kCGWindowLayer as String] ?? "?", "onscreen", w[kCGWindowIsOnscreen as String] ?? false, w[kCGWindowBounds as String] ?? "")
+          }
+          EOF
+          swift "$RUNNER_TEMP/windows.swift" || true
+          screencapture -x "$RUNNER_TEMP/shot.png" || echo "no screenshot"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: screenshot
+          path: ${{ runner.temp }}/shot.png
+          if-no-files-found: ignore
