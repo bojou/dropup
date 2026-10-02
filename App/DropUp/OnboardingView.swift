@@ -218,9 +218,8 @@ struct OnboardingView: View {
             .accessibilityElement(children: .ignore)
             .accessibilityLabel(step.accessibilityLabel)
             Spacer()
-            if step.showsBack {
-                Button("Back") { go(to: step.previous) }
-            }
+            Button("Back") { go(to: step.previous) }
+                .disabled(!step.showsBack)
             Button(step.nextLabel) { advance() }
                 .keyboardShortcut(.defaultAction)
                 .buttonStyle(.borderedProminent)

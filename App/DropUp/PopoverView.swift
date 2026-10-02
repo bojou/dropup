@@ -172,22 +172,26 @@ struct PopoverView: View {
     /// list heading, the footer is only these.
     private var footer: some View {
         HStack(spacing: PopoverLayout.spacing) {
-            if model.config != nil {
-                FooterTile(title: "Change Folder", symbol: "folder", action: openChooseFolder)
-                FooterTile(title: "Browse", symbol: "server.rack", action: openBrowse)
-            }
+            // Without a server there is nothing to change or browse: the tiles stay, greyed out.
+            FooterTile(title: "Change Folder", symbol: "folder", action: openChooseFolder)
+                .disabled(model.config == nil)
+            FooterTile(title: "Browse", symbol: "server.rack", action: openBrowse)
+                .disabled(model.config == nil)
             FooterTile(title: "Quit DropUp", symbol: "power", isQuit: true) { NSApp.terminate(nil) }
         }
     }
 }
 
-/// One of the footer's tiles. It tints blue under the pointer, and Quit tints red.
+/// One of the footer's tiles. It tints blue under the pointer, and Quit tints red. Disabled, it is dimmed and doesn't react.
 private struct FooterTile: View {
     let title: String
     let symbol: String
     var isQuit = false
     let action: () -> Void
-    @State private var isHovering = false
+    @State private var pointerIsOver = false
+    @Environment(\.isEnabled) private var isEnabled
+
+    private var isHovering: Bool { pointerIsOver && isEnabled }
 
     var body: some View {
         Button(action: action) {
@@ -207,7 +211,8 @@ private struct FooterTile: View {
             .contentShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
         }
         .buttonStyle(TilePressStyle())
-        .onHover { isHovering = $0 }
+        .opacity(isEnabled ? 1 : 0.4)
+        .onHover { pointerIsOver = $0 }
     }
 
     private var iconColor: Color {
@@ -344,7 +349,7 @@ private struct UploadRow: View {
         case .succeeded:
             return "\(total) · \(Format.ago(item.finishedAt, now: now))"
         case .failed(let message):
-            return ActivityText.failureMessage(message, for: item, hidingNames: hidesNames)
+            return ActivityText.failureMessage(message, for: item, hidingNames: hidesNames, hiddenPaths: model.hiddenPaths)
         case .cancelled:
             return "Cancelled"
         }
