@@ -10,14 +10,16 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
     private let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
     private let model: AppModel
     private let onOpenSettings: () -> Void
+    private let onOpenBrowse: () -> Void
     private let popover = NSPopover()
     private let badge = CALayer()
     private var clickAwayMonitor: Any?
     private var escapeMonitor: Any?
 
-    init(model: AppModel, onOpenSettings: @escaping () -> Void) {
+    init(model: AppModel, onOpenSettings: @escaping () -> Void, onOpenBrowse: @escaping () -> Void) {
         self.model = model
         self.onOpenSettings = onOpenSettings
+        self.onOpenBrowse = onOpenBrowse
         super.init()
 
         if let button = statusItem.button {
@@ -40,7 +42,11 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
             button.layer?.addSublayer(badge)
         }
 
-        let content = PopoverView(model: model, openSettings: { [weak self] in self?.openSettings() })
+        let content = PopoverView(
+            model: model,
+            openSettings: { [weak self] in self?.openSettings() },
+            openBrowse: { [weak self] in self?.openBrowse() }
+        )
         let controller = NSHostingController(rootView: content)
         controller.sizingOptions = [.preferredContentSize]
         popover.contentViewController = controller
@@ -157,6 +163,11 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
     private func openSettings() {
         popover.performClose(nil)
         onOpenSettings()
+    }
+
+    private func openBrowse() {
+        popover.performClose(nil)
+        onOpenBrowse()
     }
 
     func popoverDidClose(_ notification: Notification) {

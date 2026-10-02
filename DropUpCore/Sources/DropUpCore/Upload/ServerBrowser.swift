@@ -55,3 +55,23 @@ extension RemotePath {
         normalizedDirectory(normalizedDirectory(directory) + "/" + name)
     }
 }
+
+extension RemotePath {
+    /// One folder on the way down to a path, for a clickable breadcrumb.
+    public struct Step: Equatable, Sendable, Identifiable {
+        public var name: String
+        public var path: String
+        public var id: String { path }
+    }
+
+    /// The folders from the root down to `directory`: `/a/b` → `/` (named "/"), `/a`, `/a/b`.
+    public static func trail(to directory: String) -> [Step] {
+        var steps = [Step(name: "/", path: "/")]
+        var path = ""
+        for name in normalizedDirectory(directory).split(separator: "/") {
+            path += "/" + name
+            steps.append(Step(name: String(name), path: path))
+        }
+        return steps
+    }
+}

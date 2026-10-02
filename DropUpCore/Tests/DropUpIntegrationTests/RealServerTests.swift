@@ -101,6 +101,47 @@ struct RealServerTests {
     }
 
     @Test(.enabled(if: RealServerTests.enabled), arguments: [TransferProtocol.ftp, .sftp])
+    func browsingShowsFoldersAndFilesWithSizesAndDates(_ transferProtocol: TransferProtocol) async throws {
+        let name = uniqueName("txt")
+        let local = FileManager.default.temporaryDirectory.appendingPathComponent(name)
+        try Data("twelve bytes".utf8).write(to: local)
+        defer { try? FileManager.default.removeItem(at: local) }
+        _ = await upload(local, config: config(transferProtocol))
+        let server = config(transferProtocol)
+        let browse = BrowseSession(connectors: connectors(), config: server, password: "secret")
+
+        let drops = try await browse.entries(atPath: "/drops")
+        let root = try await browse.entries(atPath: "/")
+        await browse.close()
+
+        #expect(drops.contains { $0.name == "archive" && $0.kind == .folder })
+        let file = try #require(drops.first { $0.name == name })
+        #expect(file.kind == .file)
+        #expect(file.size == 12)
+        let age = Date().timeIntervalSince(try #require(file.modified))
+        #expect(age > -120 && age < 300)
+        // Folders come first, and the root lists the folder we uploaded into.
+        #expect(drops.firstIndex { $0.name == "archive" }! < drops.firstIndex { $0.name == name }!)
+        #expect(root.contains { $0.name == "drops" && $0.kind == .folder })
+    }
+
+    @Test(.enabled(if: RealServerTests.enabled), arguments: [TransferProtocol.ftp, .sftp])
+    func uploadingIntoAnotherFolderPutsTheFileThere(_ transferProtocol: TransferProtocol) async throws {
+        let name = uniqueName("txt")
+        let local = FileManager.default.temporaryDirectory.appendingPathComponent(name)
+        try Data("deep".utf8).write(to: local)
+        defer { try? FileManager.default.removeItem(at: local) }
+
+        let queue = makeQueue(config(transferProtocol))
+        await queue.enqueue([local], toDirectory: "/drops/archive")
+        await queue.waitUntilIdle()
+        await queue.finish()
+
+        #expect(serverFile("/drops/archive/\(name)") == Data("deep".utf8))
+        #expect(serverFile("/drops/\(name)") == nil)
+    }
+
+    @Test(.enabled(if: RealServerTests.enabled), arguments: [TransferProtocol.ftp, .sftp])
     func emptyFileUploads(_ transferProtocol: TransferProtocol) async throws {
         let name = uniqueName("txt")
         let local = FileManager.default.temporaryDirectory.appendingPathComponent(name)

@@ -52,6 +52,8 @@ public actor UploadQueue {
     private struct Job {
         let id: UUID
         let fileURL: URL
+        /// Where to put the file instead of the saved upload folder.
+        let remoteDirectory: String?
     }
 
     private struct OpenSession {
@@ -90,9 +92,10 @@ public actor UploadQueue {
     }
 
     /// Adds files to the end of the queue and returns their ids, in order.
+    /// - Parameter remoteDirectory: a folder on the same server to upload into instead of the saved upload folder.
     @discardableResult
-    public func enqueue(_ fileURLs: [URL]) -> [UUID] {
-        let jobs = fileURLs.map { Job(id: UUID(), fileURL: $0) }
+    public func enqueue(_ fileURLs: [URL], toDirectory remoteDirectory: String? = nil) -> [UUID] {
+        let jobs = fileURLs.map { Job(id: UUID(), fileURL: $0, remoteDirectory: remoteDirectory) }
         for job in jobs {
             pending.append(job)
             continuation.yield(.queued(id: job.id, fileName: job.fileURL.lastPathComponent, totalBytes: size(of: job.fileURL)))
@@ -190,9 +193,11 @@ public actor UploadQueue {
         }
 
         let session = try await session(for: config, password: password)
+        // Only the target folder changes. The session is still matched on the saved config, so it is reused.
+        let target = job.remoteDirectory.map(config.withRemoteDirectory) ?? config
         let remotePath = try await RemoteFileName.resolve(
             fileName: job.fileURL.lastPathComponent,
-            in: config,
+            in: target,
             policy: settings.loadPreferences().conflictPolicy,
             session: session
         )

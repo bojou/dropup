@@ -36,8 +36,13 @@ final class AppModel {
     @ObservationIgnored let credentials: any CredentialStore
     @ObservationIgnored let hostKeys: any HostKeyStore
     @ObservationIgnored let browser: ServerBrowser
+    @ObservationIgnored private let connectors: any ConnectorFactory
     @ObservationIgnored private let queue: UploadQueue
     @ObservationIgnored private var sourceURLs: [UUID: URL] = [:]
+    /// Files dropped into the Browse window go to the folder it showed; a retry sends them there again.
+    @ObservationIgnored private var destinations: [UUID: String] = [:]
+    /// Called with the remote path of each file that finishes uploading. The Browse window uses it to refresh.
+    @ObservationIgnored var onUploadSucceeded: ((String) -> Void)?
     @ObservationIgnored private var ticker: Task<Void, Never>?
 
     init(
@@ -49,6 +54,7 @@ final class AppModel {
         self.credentials = credentials
         self.hostKeys = hostKeys
         let connectors = StandardConnectorFactory(hostKeys: hostKeys)
+        self.connectors = connectors
         self.browser = ServerBrowser(connectors: connectors)
         self.queue = UploadQueue(settings: settings, credentials: credentials, connectors: connectors)
         self.config = settings.loadServerConfig()
@@ -74,7 +80,8 @@ final class AppModel {
 
     // MARK: Uploading
 
-    func upload(_ fileURLs: [URL]) {
+    /// - Parameter directory: a folder on the server to upload into instead of the saved upload folder.
+    func upload(_ fileURLs: [URL], toDirectory directory: String? = nil) {
         let files = fileURLs.filter(\.isFileURL)
         guard !files.isEmpty else { return }
         if needsOnboarding {
@@ -82,9 +89,10 @@ final class AppModel {
             return
         }
         Task {
-            let ids = await queue.enqueue(files)
+            let ids = await queue.enqueue(files, toDirectory: directory)
             for (id, url) in zip(ids, files) {
                 sourceURLs[id] = url
+                destinations[id] = directory
             }
         }
     }
@@ -99,9 +107,11 @@ final class AppModel {
 
     func retry(_ id: UUID) {
         guard let url = sourceURLs[id] else { return }
+        let directory = destinations[id]
         activity.remove(id)
         sourceURLs[id] = nil
-        upload([url])
+        destinations[id] = nil
+        upload([url], toDirectory: directory)
     }
 
     func clearFinished() {
@@ -114,6 +124,15 @@ final class AppModel {
         // Each time the popover opens it starts on the upload list.
         isChoosingFolder = false
         if shown { activity.markFailuresSeen() }
+    }
+
+    // MARK: Browsing
+
+    /// The model behind a Browse window for the saved server, or nil before setup. It starts in the upload folder.
+    func makeBrowseModel() -> BrowseModel? {
+        guard let config else { return nil }
+        let session = BrowseSession(connectors: connectors, config: config, password: password(for: config))
+        return BrowseModel(config: config, session: session)
     }
 
     // MARK: Settings
@@ -173,6 +192,9 @@ final class AppModel {
         default:
             break
         }
+        if case .succeeded(_, let remotePath) = event {
+            onUploadSucceeded?(remotePath)
+        }
         if case .failed(_, .notConfigured) = event {
             onNeedsOnboarding?()
         }
@@ -193,6 +215,7 @@ final class AppModel {
     private func forgetUnusedSources() {
         let live = Set(activity.items.map(\.id))
         sourceURLs = sourceURLs.filter { live.contains($0.key) }
+        destinations = destinations.filter { live.contains($0.key) }
     }
 
     private func startTicker() {

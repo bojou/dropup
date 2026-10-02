@@ -122,6 +122,32 @@ struct FTPSessionTests {
         #expect(server.commandLog.contains("LIST /drops"))
     }
 
+    @Test func listsEverythingInAFolderWithMLSD() async throws {
+        let server = FakeFTPServer()
+        let session = try await connect(server)
+
+        let entries = try await session.listEntries(atPath: "/drops")
+
+        // Hidden items are included (the app decides whether to show them); folders come first.
+        #expect(Set(entries.map(\.name)) == ["archive", "My Photos", ".hidden", "notes.txt"])
+        #expect(entries.prefix(3).allSatisfy { $0.kind == .folder })
+        #expect(entries.last?.name == "notes.txt")
+        #expect(entries.last?.size == 5)
+        #expect(server.commandLog.contains("MLSD /drops"))
+    }
+
+    @Test func listsEverythingInAFolderWithLISTWhenMLSDIsMissing() async throws {
+        let server = FakeFTPServer()
+        server.supportsMLSD = false
+        let session = try await connect(server)
+
+        let entries = try await session.listEntries(atPath: "/drops")
+
+        #expect(entries.map(\.name) == ["archive", "My Photos", "link", "notes.txt"])
+        #expect(entries.map(\.kind) == [.folder, .folder, .link, .file])
+        #expect(server.commandLog.contains("LIST /drops"))
+    }
+
     @Test func missingFolderIsRejected() async throws {
         let server = FakeFTPServer()
         let session = try await connect(server)
@@ -163,6 +189,52 @@ struct FTPSessionTests {
 }
 
 struct FTPListingTests {
+    @Test func mlsdEntriesCarryTypeSizeAndUTCModifiedTime() {
+        let text = [
+            "type=cdir;modify=20260101000000; .",
+            "type=pdir; ..",
+            "type=dir;modify=20260102030405; My Photos",
+            "Type=File;Size=1234;Modify=20260910120000.250; report final.pdf",
+            "type=OS.unix=slink:/var/www;size=11; www",
+            "type=OS.unix=socket; run.sock",
+            "type=file; no-facts.txt",
+        ].joined(separator: "\r\n")
+
+        let entries = FTPListing.entriesFromMLSD(text)
+
+        #expect(entries.map(\.name) == ["My Photos", "report final.pdf", "www", "no-facts.txt"])
+        #expect(entries.map(\.kind) == [.folder, .file, .link, .file])
+        #expect(entries[0].size == nil)
+        #expect(entries[1].size == 1234)
+        #expect(entries[3].size == nil)
+        #expect(entries[0].modified == Date(timeIntervalSince1970: 1_767_323_045)) // 2026-01-02 03:04:05 UTC
+        #expect(entries[1].modified == Date(timeIntervalSince1970: 1_789_041_600)) // 2026-09-10 12:00:00 UTC
+        #expect(entries[3].modified == nil)
+    }
+
+    @Test func listEntriesCarryTypeSizeAndDate() {
+        let now = Date(timeIntervalSince1970: 1_790_000_000) // 2026-09-21
+        let text = [
+            "total 12",
+            "drwxr-xr-x    2 me  staff  4096 Sep 10 12:00 My Photos",
+            "-rw-r--r--    1 me  staff  1234 Sep 10 12:00 report final.pdf",
+            "-rw-r--r--    1 me  staff    99 Dec 25 08:30 from-last-year.txt",
+            "-rw-r--r--    1 me  staff     7 Mar  3  2019 old.txt",
+            "lrwxr-xr-x    1 me  staff    11 Sep 10 12:00 www -> public_html",
+            "srwxr-xr-x    1 me  staff     0 Sep 10 12:00 run.sock",
+        ].joined(separator: "\n")
+
+        let entries = FTPListing.entriesFromLIST(text, now: now)
+
+        #expect(entries.map(\.name) == ["My Photos", "report final.pdf", "from-last-year.txt", "old.txt", "www"])
+        #expect(entries.map(\.kind) == [.folder, .file, .file, .file, .link])
+        #expect(entries[1].size == 1234)
+        #expect(entries[0].size == nil)
+        #expect(entries[1].modified == Date(timeIntervalSince1970: 1_789_041_600)) // 2026-09-10 12:00 UTC
+        #expect(entries[2].modified == Date(timeIntervalSince1970: 1_766_651_400)) // a future-looking December is last year: 2025-12-25 08:30 UTC
+        #expect(entries[3].modified == Date(timeIntervalSince1970: 1_551_571_200)) // 2019-03-03 00:00 UTC
+    }
+
     @Test func parsesMLSDFacts() {
         let text = "type=dir;modify=20260101; images\r\nType=Dir; Mixed Case\r\ntype=file;size=3; a.txt\r\ntype=cdir; .\r\n"
         #expect(FTPListing.directoriesFromMLSD(text) == ["images", "Mixed Case"])

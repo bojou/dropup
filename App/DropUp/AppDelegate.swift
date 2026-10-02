@@ -14,7 +14,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         // First, before anything reads settings: a reinstall must not inherit the old connection.
         InstallReset.reconcile()
         UNUserNotificationCenter.current().delegate = self
-        let statusItem = StatusItemController(model: model, onOpenSettings: { [weak self] in self?.windows.showSettings() })
+        let statusItem = StatusItemController(
+            model: model,
+            onOpenSettings: { [weak self] in self?.windows.showSettings() },
+            onOpenBrowse: { [weak self] in self?.windows.showBrowse() }
+        )
         self.statusItem = statusItem
         let dropPanel = DropPanelController(model: model, statusItem: statusItem)
         dropPanel.start()
