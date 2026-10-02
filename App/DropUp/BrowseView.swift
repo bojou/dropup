@@ -4,7 +4,7 @@ import UniformTypeIdentifiers
 import DropUpCore
 
 /// The Browse window: every folder and file on the server, with drag-and-drop uploads into the folder on screen,
-/// downloads, and the everyday changes an FTP app offers (new folder, rename, move, delete).
+/// downloads, and the everyday changes an FTP app offers (new folder, rename, move, copy, delete), with Undo and Redo.
 struct BrowseView: View {
     static let idealSize = CGSize(width: 920, height: 620)
     static let minimumSize = CGSize(width: 700, height: 460)
@@ -174,6 +174,22 @@ struct BrowseView: View {
             .accessibilityLabel("Reload")
 
             Divider().frame(height: 18)
+
+            Button { browse.undo() } label: {
+                Image(systemName: "arrow.uturn.backward").frame(width: 24, height: 22)
+            }
+            .disabled(!browse.canUndo)
+            .keyboardShortcut("z", modifiers: .command)
+            .help(browse.undoTitle.map { "Undo \($0)" } ?? "Nothing to undo")
+            .accessibilityLabel("Undo")
+
+            Button { browse.redo() } label: {
+                Image(systemName: "arrow.uturn.forward").frame(width: 24, height: 22)
+            }
+            .disabled(!browse.canRedo)
+            .keyboardShortcut("z", modifiers: [.command, .shift])
+            .help(browse.redoTitle.map { "Redo \($0)" } ?? "Nothing to redo")
+            .accessibilityLabel("Redo")
 
             Button { startNewFolder() } label: {
                 Image(systemName: "folder.badge.plus").frame(width: 24, height: 22)

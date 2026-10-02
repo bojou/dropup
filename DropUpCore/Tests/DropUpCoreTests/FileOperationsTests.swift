@@ -94,7 +94,7 @@ struct FileOperationsTests {
         let server = FakeFileSystem().addFile("/drops/a.txt").addFile("/drops/sub/b.txt").addFolder("/drops/target")
         let result = try await FileOperations.move([file("a.txt"), folder("sub")], from: "/drops", to: "/drops/target", session: server)
 
-        #expect(result == FileOperationResult(completed: 2, failures: []))
+        #expect(result.withoutChange == FileOperationResult(completed: 2, failures: []))
         #expect(server.paths(under: "/drops") == ["/drops/target", "/drops/target/a.txt", "/drops/target/sub", "/drops/target/sub/b.txt"])
     }
 
@@ -105,15 +105,14 @@ struct FileOperationsTests {
         #expect(server.log.isEmpty)
     }
 
-    @Test func aTakenNameIsLeftAloneAndTheRestStillMove() async throws {
+    @Test func aTakenNameGetsANumberWhenKeepingBothAndTheRestStillMove() async throws {
         let server = FakeFileSystem().addFile("/drops/a.txt").addFile("/drops/b.txt").addFile("/target/a.txt")
         server.replacesOnRename = true
         let result = try await FileOperations.move([file("a.txt"), file("b.txt")], from: "/drops", to: "/target", session: server)
 
-        #expect(result.completed == 1)
-        #expect(result.failures == [FileOperationFailure(name: "a.txt", message: FileOperationError.alreadyExists("a.txt").errorDescription!)])
-        #expect(server.exists("/drops/a.txt"))
-        #expect(server.exists("/target/b.txt"))
+        #expect(result.completed == 2 && result.failures.isEmpty && result.renamed == 1)
+        #expect(server.paths(under: "/target") == ["/target/a-1.txt", "/target/a.txt", "/target/b.txt"])
+        #expect(!server.exists("/drops/a.txt"))
     }
 
     @Test func aFolderCannotGoIntoItselfOrBelowItself() async throws {
@@ -131,7 +130,7 @@ struct FileOperationsTests {
     @Test func aFolderMayGoNextToOneWithTheSamePrefix() async throws {
         let server = FakeFileSystem().addFolder("/drops/a").addFolder("/drops/ab")
         let result = try await FileOperations.move([folder("a")], from: "/drops", to: "/drops/ab", session: server)
-        #expect(result == FileOperationResult(completed: 1, failures: []))
+        #expect(result.withoutChange == FileOperationResult(completed: 1, failures: []))
         #expect(server.exists("/drops/ab/a"))
     }
 

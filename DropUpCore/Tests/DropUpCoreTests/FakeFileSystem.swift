@@ -15,6 +15,7 @@ final class FakeFileSystem: ServerSession, @unchecked Sendable {
     private var nodes: [String: Node] = ["/": .folder]
     private var _log: [String] = []
     private var _failures: [String: any Error] = [:]
+    private var _fragmentFailures: [(fragment: String, during: String?, error: any Error)] = []
     private var _delayMilliseconds: UInt64 = 0
     private var _nextFailure: (any Error)?
     private var contents: [String: Data] = [:]
@@ -34,6 +35,12 @@ final class FakeFileSystem: ServerSession, @unchecked Sendable {
 
     /// Makes deleting, removing or renaming `path` fail with `error`.
     func fail(_ path: String, with error: any Error) { lock.withLock { _failures[path] = error } }
+
+    /// Makes a command on any path that contains `fragment` fail with `error`, for the commands that start with `during`
+    /// (like `RENAME`) or for all of them.
+    func fail(pathsContaining fragment: String, during commandPrefix: String? = nil, with error: any Error) {
+        lock.withLock { _fragmentFailures.append((fragment, commandPrefix, error)) }
+    }
 
     /// Makes the next command of any kind fail with `error`, as when the server dropped an idle login.
     func failNextCommand(with error: any Error) { lock.withLock { _nextFailure = error } }
@@ -112,7 +119,10 @@ final class FakeFileSystem: ServerSession, @unchecked Sendable {
         let (delay, failure, dropped) = lock.withLock { () -> (UInt64, (any Error)?, (any Error)?) in
             _log.append(command)
             defer { _nextFailure = nil }
-            return (_delayMilliseconds, path.flatMap { _failures[$0] }, _nextFailure)
+            let scripted = path.flatMap { path in
+                _failures[path] ?? _fragmentFailures.first { path.contains($0.fragment) && ($0.during.map(command.hasPrefix) ?? true) }?.error
+            }
+            return (_delayMilliseconds, scripted, _nextFailure)
         }
         if let dropped { throw dropped }
         if delay > 0 { try await Task.sleep(nanoseconds: delay * 1_000_000) }
@@ -205,7 +215,9 @@ final class FakeFileSystem: ServerSession, @unchecked Sendable {
             switch nodes[remotePath] {
             case nil: throw Self.refuse("No such file")
             case .folder?: throw Self.refuse("Is a directory")
-            case .file?, .link?: nodes[remotePath] = nil
+            case .file?, .link?:
+                nodes[remotePath] = nil
+                contents[remotePath] = nil
             }
         }
     }
@@ -239,6 +251,10 @@ final class FakeFileSystem: ServerSession, @unchecked Sendable {
             let moved = nodes.filter { $0.key == oldPath || $0.key.hasPrefix(oldPath + "/") }
             for (path, _) in moved { nodes[path] = nil }
             for (path, node) in moved { nodes[newPath + path.dropFirst(oldPath.count)] = node }
+            for (path, data) in contents where path == oldPath || path.hasPrefix(oldPath + "/") {
+                contents[path] = nil
+                contents[newPath + path.dropFirst(oldPath.count)] = data
+            }
         }
     }
 

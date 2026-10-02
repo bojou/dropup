@@ -384,7 +384,7 @@ struct RealServerTests {
         let moving = listing.filter { $0.name == "renamed note.txt" || $0.name == "Älbum 1" }
         #expect(moving.count == 2)
         let result = try await browse.move(moving, from: scratch.path, to: scratch.path + "/Neuer Ordner")
-        #expect(result == FileOperationResult(completed: 2, failures: []))
+        #expect(result.withoutChange == FileOperationResult(completed: 2, failures: []))
         #expect(serverFile("/ops/\(scratch.name)/Neuer Ordner/renamed note.txt") == Data("hello".utf8))
         #expect(serverFile("/ops/\(scratch.name)/Neuer Ordner/Älbum 1/inside.txt") == Data("deep".utf8))
         let rest = try await browse.entries(atPath: scratch.path)
@@ -408,10 +408,12 @@ struct RealServerTests {
         }
         let result = try await browse.move([a], from: scratch.path, to: scratch.path + "/target")
 
-        #expect(result.completed == 0 && result.failures.map(\.name) == ["a.txt"])
-        #expect(serverFile("/ops/\(scratch.name)/a.txt") == Data("mine".utf8))
+        // Keeping both is the default: the moved file gets a number and the one already there is untouched.
+        #expect(result.completed == 1 && result.renamed == 1 && result.failures.isEmpty)
+        #expect(serverFile("/ops/\(scratch.name)/a.txt") == nil)
         #expect(serverFile("/ops/\(scratch.name)/b.txt") == Data("theirs".utf8))
         #expect(serverFile("/ops/\(scratch.name)/target/a.txt") == Data("elsewhere".utf8))
+        #expect(serverFile("/ops/\(scratch.name)/target/a-1.txt") == Data("mine".utf8))
     }
 
     @Test(.enabled(if: RealServerTests.enabled), arguments: [TransferProtocol.ftp, .sftp])
@@ -482,8 +484,8 @@ struct RealServerTests {
         let into = try await browse.copy(chosen, from: scratch.path, to: scratch.path + "/target") { progress.add(Int($0.fraction * 100)) }
         let beside = try await browse.copy(chosen.filter { $0.name == "note.txt" }, from: scratch.path, to: scratch.path)
 
-        #expect(into == FileOperationResult(completed: 3, skipped: 1))
-        #expect(beside == FileOperationResult(completed: 1))
+        #expect(into.withoutChange == FileOperationResult(completed: 3, skipped: 1))
+        #expect(beside.withoutChange == FileOperationResult(completed: 1))
         let base = "/ops/\(scratch.name)"
         #expect(serverFile(base + "/target/note.txt") == Data("already".utf8))
         #expect(serverFile(base + "/target/note copy.txt") == Data("hello".utf8))
@@ -498,6 +500,81 @@ struct RealServerTests {
         #expect(serverFile(base + "/note.txt") == Data("hello".utf8))
         #expect(serverFile(base + "/outside/precious.txt") == Data("precious".utf8))
         #expect(progress.values.last == 100)
+    }
+
+    @Test(.enabled(if: RealServerTests.enabled), arguments: [TransferProtocol.ftp, .sftp])
+    func movesAndCopiesReplaceAFileOnlyWhenToldTo(_ transferProtocol: TransferProtocol) async throws {
+        let scratch = try scratchFolder()
+        defer { try? FileManager.default.removeItem(atPath: scratch.disk) }
+        try write("new move", to: scratch.disk + "/from/moved.txt")
+        try write("new copy", to: scratch.disk + "/from/copied.txt")
+        try write("kept", to: scratch.disk + "/from/both.txt")
+        try write("old move", to: scratch.disk + "/to/moved.txt")
+        try write("old copy", to: scratch.disk + "/to/copied.txt")
+        try write("other", to: scratch.disk + "/to/both.txt")
+        let browse = BrowseSession(connectors: connectors(), config: config(transferProtocol), password: "secret")
+        defer { Task { await browse.close() } }
+        let listing = try await browse.entries(atPath: scratch.path + "/from")
+        func pick(_ name: String) throws -> RemoteEntry { try #require(listing.first { $0.name == name }) }
+        let base = "/ops/\(scratch.name)"
+
+        let both = try await browse.move([pick("both.txt")], from: base + "/from", to: base + "/to", policy: .keepBoth)
+        #expect(both.completed == 1 && both.renamed == 1 && both.replaced == 0)
+        #expect(serverFile(base + "/to/both.txt") == Data("other".utf8))
+        #expect(serverFile(base + "/to/both-1.txt") == Data("kept".utf8))
+
+        let moved = try await browse.move([pick("moved.txt")], from: base + "/from", to: base + "/to", policy: .replace)
+        #expect(moved.completed == 1 && moved.replaced == 1 && moved.failures.isEmpty)
+        #expect(serverFile(base + "/to/moved.txt") == Data("new move".utf8))
+        #expect(serverFile(base + "/from/moved.txt") == nil)
+
+        let copied = try await browse.copy([pick("copied.txt")], from: base + "/from", to: base + "/to", policy: .replace)
+        #expect(copied.completed == 1 && copied.replaced == 1 && copied.failures.isEmpty)
+        #expect(serverFile(base + "/to/copied.txt") == Data("new copy".utf8))
+        #expect(serverFile(base + "/from/copied.txt") == Data("new copy".utf8))
+
+        // Nothing hidden was left behind by the swaps.
+        let after = try await browse.entries(atPath: base + "/to")
+        #expect(after.map(\.name).sorted() == ["both-1.txt", "both.txt", "copied.txt", "moved.txt"])
+    }
+
+    @Test(.enabled(if: RealServerTests.enabled), arguments: [TransferProtocol.ftp, .sftp])
+    func undoAndRedoTakeBackAndRepeatChanges(_ transferProtocol: TransferProtocol) async throws {
+        let scratch = try scratchFolder()
+        defer { try? FileManager.default.removeItem(atPath: scratch.disk) }
+        try write("hello", to: scratch.disk + "/note.txt")
+        try write("deep", to: scratch.disk + "/Älbum/inside.txt")
+        try FileManager.default.createDirectory(atPath: scratch.disk + "/target", withIntermediateDirectories: true)
+        let browse = BrowseSession(connectors: connectors(), config: config(transferProtocol), password: "secret")
+        defer { Task { await browse.close() } }
+        let listing = try await browse.entries(atPath: scratch.path)
+        let note = try #require(listing.first { $0.name == "note.txt" })
+        let album = try #require(listing.first { $0.name == "Älbum" })
+        let base = "/ops/\(scratch.name)"
+
+        let made = try await browse.makeFolder(named: "Neuer Ordner", in: base)
+        let renamed = try #require(try await browse.rename(note, to: "renamed.txt", in: base))
+        let moved = try await browse.move([album], from: base, to: base + "/target")
+        let copied = try await browse.copy([RemoteEntry(name: "renamed.txt", kind: .file, size: 5)], from: base, to: base + "/target")
+
+        let undoCopy = try await browse.undo(try #require(copied.change))
+        #expect(undoCopy.failures.isEmpty && serverFile(base + "/target/renamed.txt") == nil)
+        let undoMove = try await browse.undo(try #require(moved.change))
+        #expect(undoMove.failures.isEmpty && serverFile(base + "/Älbum/inside.txt") == Data("deep".utf8))
+        let undoRename = try await browse.undo(renamed)
+        #expect(undoRename.failures.isEmpty && serverFile(base + "/note.txt") == Data("hello".utf8))
+        let undoFolder = try await browse.undo(made)
+        #expect(undoFolder.failures.isEmpty)
+        #expect(!FileManager.default.fileExists(atPath: scratch.disk + "/Neuer Ordner"))
+
+        let redoFolder = try await browse.redo(made)
+        #expect(redoFolder.completed == 1 && FileManager.default.fileExists(atPath: scratch.disk + "/Neuer Ordner"))
+        let redoRename = try await browse.redo(renamed)
+        #expect(redoRename.failures.isEmpty && serverFile(base + "/renamed.txt") == Data("hello".utf8))
+        let redoMove = try await browse.redo(try #require(undoMove.change))
+        #expect(redoMove.failures.isEmpty && serverFile(base + "/target/Älbum/inside.txt") == Data("deep".utf8))
+        let redoCopy = try await browse.redo(try #require(undoCopy.change))
+        #expect(redoCopy.failures.isEmpty && serverFile(base + "/target/renamed.txt") == Data("hello".utf8))
     }
 
     @Test(.enabled(if: RealServerTests.enabled), arguments: [TransferProtocol.ftp, .sftp])
@@ -615,4 +692,14 @@ final class ProgressLog: @unchecked Sendable {
     private var _values: [Int] = []
     func add(_ value: Int) { lock.withLock { _values.append(value) } }
     var values: [Int] { lock.withLock { _values } }
+}
+
+
+extension FileOperationResult {
+    /// The result without the record Undo keeps, for tests that only look at the counts.
+    var withoutChange: FileOperationResult {
+        var copy = self
+        copy.change = nil
+        return copy
+    }
 }

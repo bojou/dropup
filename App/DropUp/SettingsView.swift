@@ -252,7 +252,7 @@ private struct GeneralSettings: View {
                     ForEach(Preferences.recentLimitOptions, id: \.self) { Text("Show the last \($0) uploads").tag($0) }
                 }
             } footer: {
-                Text("“Same file name” is what happens when the folder already has a file with that name.")
+                Text("“Same file name” is what happens when the folder already has a file with that name, whether you upload one or move or paste one into it in Browse. A replaced file can’t be brought back.")
                     .font(.system(size: 11))
             }
             Section {

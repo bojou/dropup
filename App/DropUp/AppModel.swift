@@ -142,7 +142,12 @@ final class AppModel {
         guard let config else { return nil }
         let password = password(for: config)
         let session = BrowseSession(connectors: connectors, config: config, password: password)
-        return BrowseModel(config: config, password: password, session: session)
+        return BrowseModel(
+            config: config,
+            password: password,
+            session: session,
+            conflictPolicy: { [weak self] in self?.preferences.conflictPolicy ?? .keepBoth }
+        )
     }
 
     // MARK: Settings

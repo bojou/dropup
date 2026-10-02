@@ -224,3 +224,13 @@ func eventually(_ condition: @Sendable () async -> Bool) async throws {
     struct Timeout: Error {}
     throw Timeout()
 }
+
+
+extension FileOperationResult {
+    /// The result without the record Undo keeps, for tests that only look at the counts.
+    var withoutChange: FileOperationResult {
+        var copy = self
+        copy.change = nil
+        return copy
+    }
+}
