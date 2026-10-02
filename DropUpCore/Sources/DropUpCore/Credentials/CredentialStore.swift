@@ -70,6 +70,21 @@ public struct KeychainCredentialStore: CredentialStore {
         }
     }
 
+    /// Deletes every password this app stored, whatever server it was for.
+    public func removeAllPasswords() throws {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecMatchLimit as String: kSecMatchLimitAll,
+        ]
+        // The older macOS keychain can stop after the first match, so repeat until nothing is left.
+        for _ in 0..<50 {
+            let status = SecItemDelete(query as CFDictionary)
+            if status == errSecItemNotFound { return }
+            guard status == errSecSuccess else { throw CredentialStoreError.unexpectedStatus(status) }
+        }
+    }
+
     private func baseQuery(for key: String) -> [String: Any] {
         [
             kSecClass as String: kSecClassGenericPassword,
