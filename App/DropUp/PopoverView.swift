@@ -1,6 +1,17 @@
 import SwiftUI
 import DropUpCore
 
+/// Sizes shared by both pages of the popover, so its width and spacing are set in one place.
+enum PopoverLayout {
+    static let width: CGFloat = 380
+    static let padding: CGFloat = 14
+    static let spacing: CGFloat = 8
+    /// The upload list shows this many rows and scrolls beyond that, instead of stretching the popover down the screen.
+    static let visibleRows = 6
+    /// About one row of the list; the cap is `visibleRows` of these. Rows with a progress bar are a little taller.
+    static let rowHeight: CGFloat = 52
+}
+
 /// What opens when you click the menubar icon: where files go, what is uploading, and recent uploads.
 struct PopoverView: View {
     let model: AppModel
@@ -18,7 +29,7 @@ struct PopoverView: View {
 
     private var uploads: some View {
         let activity = model.activity
-        return VStack(spacing: 6) {
+        return VStack(spacing: PopoverLayout.spacing) {
             header
             if activity.isBusy {
                 dropMoreStrip
@@ -30,8 +41,8 @@ struct PopoverView: View {
             Divider().padding(.horizontal, 4).padding(.vertical, 2)
             footer
         }
-        .padding(10)
-        .frame(width: 336)
+        .padding(PopoverLayout.padding)
+        .frame(width: PopoverLayout.width)
         .overlay {
             if isDropTargeted {
                 RoundedRectangle(cornerRadius: 10, style: .continuous)
@@ -54,7 +65,7 @@ struct PopoverView: View {
             Image(systemName: "arrow.up.to.line")
                 .font(.system(size: 15, weight: .semibold))
                 .foregroundStyle(.white)
-                .frame(width: 30, height: 30)
+                .frame(width: 34, height: 34)
                 .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(Color.accentColor))
             VStack(alignment: .leading, spacing: 1) {
                 Text("DropUp").font(.system(size: 13, weight: .semibold))
@@ -93,7 +104,7 @@ struct PopoverView: View {
                 .foregroundStyle(.secondary)
         }
         .frame(maxWidth: .infinity)
-        .frame(height: 132)
+        .frame(height: 148)
         .background(dashedBorder)
     }
 
@@ -145,43 +156,82 @@ struct PopoverView: View {
         }
     }
 
+    /// Up to `PopoverLayout.visibleRows` rows take the room they need. A longer list gets a fixed height of that many
+    /// rows and scrolls, so the popover never grows past a known size.
     @ViewBuilder
     private func rows(_ activity: UploadActivity) -> some View {
-        VStack(spacing: 0) {
+        let list = VStack(spacing: 0) {
             ForEach(activity.items) { item in
                 UploadRow(item: item, activity: activity, now: model.now, model: model)
             }
         }
+        if activity.items.count > PopoverLayout.visibleRows {
+            ScrollView {
+                list
+            }
+            .frame(height: CGFloat(PopoverLayout.visibleRows) * PopoverLayout.rowHeight)
+        } else {
+            list
+        }
     }
 
-    /// Change Folder on the left, Browse centered between it and Quit on the right. With Cancel All and Clear
-    /// in the list heading, the row has room for all three at every state.
+    /// Change Folder, Browse and Quit as three equal tiles, icon above the label. With Cancel All and Clear in the
+    /// list heading, the footer is only these.
     private var footer: some View {
-        HStack {
+        HStack(spacing: PopoverLayout.spacing) {
             if model.config != nil {
-                FooterButton(title: "Change Folder") { model.isChoosingFolder = true }
-                Spacer()
-                FooterButton(title: "Browse", action: openBrowse)
+                FooterTile(title: "Change Folder", symbol: "folder") { model.isChoosingFolder = true }
+                FooterTile(title: "Browse", symbol: "server.rack", action: openBrowse)
             }
-            Spacer()
-            FooterButton(title: "Quit DropUp") { NSApp.terminate(nil) }
+            FooterTile(title: "Quit DropUp", symbol: "power", isQuit: true) { NSApp.terminate(nil) }
         }
     }
 }
 
-private struct FooterButton: View {
+/// One of the footer's tiles. It tints blue under the pointer, and Quit tints red.
+private struct FooterTile: View {
     let title: String
+    let symbol: String
+    var isQuit = false
     let action: () -> Void
+    @State private var isHovering = false
 
     var body: some View {
         Button(action: action) {
-            Text(title)
-                .font(.system(size: 12))
-                .padding(.horizontal, 8)
-                .padding(.vertical, 5)
-                .contentShape(Rectangle())
+            VStack(spacing: 5) {
+                Image(systemName: symbol)
+                    .font(.system(size: 20))
+                    .foregroundStyle(iconColor)
+                Text(title)
+                    .font(.system(size: 11.5, weight: .medium))
+                    .foregroundStyle(isQuit && isHovering ? Color.red : Color.primary)
+                    .lineLimit(1)
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.top, 11)
+            .padding(.bottom, 9)
+            .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(fill))
+            .contentShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
         }
-        .buttonStyle(.plain)
+        .buttonStyle(TilePressStyle())
+        .onHover { isHovering = $0 }
+    }
+
+    private var iconColor: Color {
+        if !isQuit { return Color.accentColor }
+        return isHovering ? Color.red : Color.secondary
+    }
+
+    private var fill: Color {
+        if isHovering { return isQuit ? Color.red.opacity(0.14) : Color.accentColor.opacity(0.15) }
+        return Color.primary.opacity(0.06)
+    }
+}
+
+/// Presses in slightly, like the tiles in Control Center.
+private struct TilePressStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label.scaleEffect(configuration.isPressed ? 0.96 : 1)
     }
 }
 
@@ -245,7 +295,7 @@ private struct UploadRow: View {
             trailing
         }
         .padding(.horizontal, 6)
-        .padding(.vertical, 7)
+        .padding(.vertical, 9)
         .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(isFailure ? Color.red.opacity(0.08) : .clear))
         .accessibilityElement(children: .combine)
     }
