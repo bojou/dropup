@@ -15,10 +15,13 @@ public struct FileOperationFailure: Sendable, Equatable {
 public struct FileOperationResult: Sendable, Equatable {
     public var completed: Int
     public var failures: [FileOperationFailure]
+    /// Links and special items inside copied folders that were left out.
+    public var skipped: Int
 
-    public init(completed: Int = 0, failures: [FileOperationFailure] = []) {
+    public init(completed: Int = 0, failures: [FileOperationFailure] = [], skipped: Int = 0) {
         self.completed = completed
         self.failures = failures
+        self.skipped = skipped
     }
 
     public var isComplete: Bool { failures.isEmpty }
@@ -28,6 +31,8 @@ public enum FileOperationError: Error, Equatable, Sendable {
     case invalidName
     case alreadyExists(String)
     case movedIntoItself
+    case copiedIntoItself
+    case cantCopyLink
     case isRoot
     case tooDeep
     case tooMany
@@ -44,6 +49,10 @@ extension FileOperationError: LocalizedError {
             "Something called “\(name)” is already there."
         case .movedIntoItself:
             "A folder can't be moved into itself."
+        case .copiedIntoItself:
+            "A folder can't be copied into itself."
+        case .cantCopyLink:
+            "A link can't be copied. Copy the file or folder it points to instead."
         case .isRoot:
             "The top folder of the server can't be changed."
         case .tooDeep:
@@ -215,9 +224,9 @@ public enum FileOperations {
     }
 
     /// An answer from the server that says "no" to this item, as opposed to a broken connection or a cancel.
-    private static func isRefusal(_ error: any Error) -> Bool {
+    static func isRefusal(_ error: any Error) -> Bool {
         switch error {
-        case is FileOperationError, UploaderError.serverRejected, UploaderError.invalidRemotePath:
+        case is FileOperationError, is FolderTransferError, UploaderError.serverRejected, UploaderError.invalidRemotePath:
             true
         default:
             false
@@ -225,7 +234,7 @@ public enum FileOperations {
     }
 
     /// Turns a refusal into a failure to report. Anything else (cancel, lost connection) goes on up.
-    private static func failure(for entry: RemoteEntry, _ error: any Error) throws -> FileOperationFailure {
+    static func failure(for entry: RemoteEntry, _ error: any Error) throws -> FileOperationFailure {
         guard isRefusal(error) else { throw error }
         return FileOperationFailure(name: entry.name, message: UploadQueue.message(for: error))
     }

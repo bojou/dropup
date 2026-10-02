@@ -460,6 +460,47 @@ struct RealServerTests {
     }
 
     @Test(.enabled(if: RealServerTests.enabled), arguments: [TransferProtocol.ftp, .sftp])
+    func copiesFilesAndFoldersWithoutReplacingAnythingOrFollowingLinks(_ transferProtocol: TransferProtocol) async throws {
+        let scratch = try scratchFolder()
+        defer { try? FileManager.default.removeItem(atPath: scratch.disk) }
+        let big = String(repeating: "0123456789", count: 30_000)
+        try write("hello", to: scratch.disk + "/note.txt")
+        try write(big, to: scratch.disk + "/big.bin")
+        try write("one", to: scratch.disk + "/Älbum/one.txt")
+        try write("two", to: scratch.disk + "/Älbum/sub/two.txt")
+        try FileManager.default.createDirectory(atPath: scratch.disk + "/Älbum/empty", withIntermediateDirectories: true)
+        try write("precious", to: scratch.disk + "/outside/precious.txt")
+        try FileManager.default.createSymbolicLink(atPath: scratch.disk + "/Älbum/shortcut", withDestinationPath: scratch.disk + "/outside")
+        try write("already", to: scratch.disk + "/target/note.txt")
+        let browse = BrowseSession(connectors: connectors(), config: config(transferProtocol), password: "secret")
+        defer { Task { await browse.close() } }
+        let listing = try await browse.entries(atPath: scratch.path)
+        let chosen = listing.filter { ["note.txt", "big.bin", "Älbum"].contains($0.name) }
+        #expect(chosen.count == 3)
+        let progress = ProgressLog()
+
+        let into = try await browse.copy(chosen, from: scratch.path, to: scratch.path + "/target") { progress.add(Int($0.fraction * 100)) }
+        let beside = try await browse.copy(chosen.filter { $0.name == "note.txt" }, from: scratch.path, to: scratch.path)
+
+        #expect(into == FileOperationResult(completed: 3, skipped: 1))
+        #expect(beside == FileOperationResult(completed: 1))
+        let base = "/ops/\(scratch.name)"
+        #expect(serverFile(base + "/target/note.txt") == Data("already".utf8))
+        #expect(serverFile(base + "/target/note copy.txt") == Data("hello".utf8))
+        #expect(serverFile(base + "/target/big.bin") == Data(big.utf8))
+        #expect(serverFile(base + "/target/Älbum/one.txt") == Data("one".utf8))
+        #expect(serverFile(base + "/target/Älbum/sub/two.txt") == Data("two".utf8))
+        var isFolder: ObjCBool = false
+        #expect(FileManager.default.fileExists(atPath: scratch.disk + "/target/Älbum/empty", isDirectory: &isFolder) && isFolder.boolValue)
+        #expect(!FileManager.default.fileExists(atPath: scratch.disk + "/target/Älbum/shortcut"))
+        #expect(serverFile(base + "/note copy.txt") == Data("hello".utf8))
+        // The originals and what the link led to are untouched.
+        #expect(serverFile(base + "/note.txt") == Data("hello".utf8))
+        #expect(serverFile(base + "/outside/precious.txt") == Data("precious".utf8))
+        #expect(progress.values.last == 100)
+    }
+
+    @Test(.enabled(if: RealServerTests.enabled), arguments: [TransferProtocol.ftp, .sftp])
     func changesThatTheServerRefusesAreReportedPlainly(_ transferProtocol: TransferProtocol) async throws {
         let scratch = try scratchFolder()
         defer { try? FileManager.default.removeItem(atPath: scratch.disk) }

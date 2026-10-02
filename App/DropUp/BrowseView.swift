@@ -355,6 +355,8 @@ struct BrowseView: View {
                 Button("Rename…") { startRename(chosen[0]) }
             }
             Button("Cut") { browse.cut(chosen) }
+            Button("Copy") { browse.copyToClipboard(chosen) }
+            Button(chosen.count == 1 ? "Duplicate" : "Duplicate \(chosen.count) Items") { browse.duplicate(chosen) }
             if browse.clipboard != nil, chosen.count == 1, chosen[0].kind == .folder {
                 Button("Paste Into “\(chosen[0].name)”") { browse.paste(into: chosen[0].name) }
             }
@@ -410,6 +412,12 @@ struct BrowseView: View {
             Button("Cut") { browse.cut(selectedEntries) }
                 .keyboardShortcut("x", modifiers: .command)
                 .disabled(selection.isEmpty)
+            Button("Copy") { browse.copyToClipboard(selectedEntries) }
+                .keyboardShortcut("c", modifiers: .command)
+                .disabled(selection.isEmpty)
+            Button("Duplicate") { browse.duplicate(selectedEntries) }
+                .keyboardShortcut("d", modifiers: .command)
+                .disabled(selection.isEmpty || browse.isBusy)
             Button("Paste") { browse.paste() }
                 .keyboardShortcut("v", modifiers: .command)
                 .disabled(browse.clipboard == nil)
@@ -474,13 +482,21 @@ struct BrowseView: View {
         .frame(height: 34)
     }
 
-    /// A move, rename, new folder or delete that is running.
+    /// A move, copy, rename, new folder or delete that is running.
     private func operationStrip(_ operation: BrowseModel.Operation) -> some View {
         HStack(spacing: 10) {
-            ProgressView().controlSize(.small)
+            if let fraction = operation.fraction {
+                ProgressView(value: fraction).frame(width: 90)
+            } else {
+                ProgressView().controlSize(.small)
+            }
             Text(operation.title).font(.system(size: 12))
-            if let count = operation.count, count > 0 {
-                Text("\(count) removed").font(.system(size: 11).monospacedDigit()).foregroundStyle(.secondary)
+            if let detail = operation.detail, !detail.isEmpty {
+                Text(detail)
+                    .font(.system(size: 11).monospacedDigit())
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
             }
             Spacer()
             if operation.canCancel {
@@ -495,10 +511,15 @@ struct BrowseView: View {
         HStack(spacing: 12) {
             Text(summary).font(.system(size: 11)).foregroundStyle(.secondary)
             if let clipboard = browse.clipboard {
-                Label("\(clipboard.entries.count) cut. Open a folder and choose Paste to move.", systemImage: "scissors")
-                    .font(.system(size: 11))
-                    .foregroundStyle(.secondary)
-                Button("Clear") { browse.cut([]) }.controlSize(.mini).buttonStyle(.link)
+                Label(
+                    clipboard.mode == .cut
+                        ? "\(clipboard.entries.count) cut. Open a folder and choose Paste to move."
+                        : "\(clipboard.entries.count) copied. Open a folder and choose Paste to copy.",
+                    systemImage: clipboard.mode == .cut ? "scissors" : "doc.on.doc"
+                )
+                .font(.system(size: 11))
+                .foregroundStyle(.secondary)
+                Button("Clear") { browse.clearClipboard() }.controlSize(.mini).buttonStyle(.link)
             }
             Spacer()
             Toggle("Show hidden files", isOn: $showsHidden)
@@ -530,7 +551,7 @@ struct BrowseView: View {
     }
 
     private func isCut(_ entry: RemoteEntry) -> Bool {
-        guard let clipboard = browse.clipboard, clipboard.folder == browse.path else { return false }
+        guard let clipboard = browse.clipboard, clipboard.mode == .cut, clipboard.folder == browse.path else { return false }
         return clipboard.entries.contains { $0.name == entry.name }
     }
 
