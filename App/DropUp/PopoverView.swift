@@ -252,6 +252,7 @@ private struct UploadRow: View {
     let activity: UploadActivity
     let now: Date
     let model: AppModel
+    @State private var isHovering = false
 
     var body: some View {
         HStack(spacing: 10) {
@@ -295,7 +296,32 @@ private struct UploadRow: View {
         .padding(.horizontal, 6)
         .padding(.vertical, 9)
         .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(isFailure ? Color.red.opacity(0.08) : .clear))
+        .onHover { isHovering = $0 }
+        .contextMenu {
+            if isFailure, model.canRetry(item.id) {
+                Button("Retry") { model.retry(item.id) }
+            }
+            if canDismiss {
+                Button("Remove from List") { model.dismiss(item.id) }
+            }
+        }
         .accessibilityElement(children: .combine)
+    }
+
+    private var canDismiss: Bool { activity.canDismiss(item) }
+
+    /// The same round cross as Cancel, for taking one finished upload out of the list.
+    private var dismissButton: some View {
+        Button { model.dismiss(item.id) } label: {
+            Image(systemName: "xmark")
+                .font(.system(size: 9, weight: .bold))
+                .frame(width: 22, height: 22)
+                .background(Circle().fill(Color.primary.opacity(0.08)))
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(.secondary)
+        .help("Remove from list")
+        .accessibilityLabel("Remove from list")
     }
 
     private var isFailure: Bool {
@@ -338,19 +364,28 @@ private struct UploadRow: View {
             .foregroundStyle(.secondary)
             .accessibilityLabel("Cancel upload")
         case .succeeded:
-            Image(systemName: "checkmark")
-                .font(.system(size: 10, weight: .bold))
-                .foregroundStyle(.white)
-                .frame(width: 20, height: 20)
-                .background(Circle().fill(Color.green))
-                .accessibilityLabel("Uploaded")
+            // The check turns into a cross under the pointer, which removes the upload from the list.
+            if isHovering, canDismiss {
+                dismissButton
+            } else {
+                Image(systemName: "checkmark")
+                    .font(.system(size: 10, weight: .bold))
+                    .foregroundStyle(.white)
+                    .frame(width: 20, height: 20)
+                    .background(Circle().fill(Color.green))
+                    .frame(width: 22, height: 22)
+                    .accessibilityLabel("Uploaded")
+            }
         case .failed:
-            if model.canRetry(item.id) {
-                Button("Retry") { model.retry(item.id) }
-                    .controlSize(.small)
+            HStack(spacing: 8) {
+                if model.canRetry(item.id) {
+                    Button("Retry") { model.retry(item.id) }
+                        .controlSize(.small)
+                }
+                if canDismiss { dismissButton }
             }
         case .cancelled:
-            EmptyView()
+            if canDismiss { dismissButton }
         }
     }
 }
