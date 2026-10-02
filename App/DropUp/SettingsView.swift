@@ -2,17 +2,39 @@ import SwiftUI
 import DropUpCore
 
 /// Settings: a Connection tab for the server and a General tab for everything else.
+/// Same window size and chrome as onboarding, so the two read as one app.
 struct SettingsView: View {
+    static let size = CGSize(width: 600, height: 460)
+
     let model: AppModel
+    @State private var tab = Tab.connection
+
+    private enum Tab { case connection, general }
 
     var body: some View {
-        TabView {
-            ConnectionSettings(model: model)
-                .tabItem { Label("Connection", systemImage: "externaldrive.connected.to.line.below") }
-            GeneralSettings(model: model)
-                .tabItem { Label("General", systemImage: "slider.horizontal.3") }
+        VStack(spacing: 0) {
+            Picker("", selection: $tab) {
+                Text("Connection").tag(Tab.connection)
+                Text("General").tag(Tab.general)
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .frame(width: 240)
+            .padding(.vertical, 14)
+            Divider()
+            // Both tabs stay alive so unsaved edits on Connection survive a peek at General.
+            ZStack {
+                ConnectionSettings(model: model)
+                    .opacity(tab == .connection ? 1 : 0)
+                    .disabled(tab != .connection)
+                    .accessibilityHidden(tab != .connection)
+                GeneralSettings(model: model)
+                    .opacity(tab == .general ? 1 : 0)
+                    .disabled(tab != .general)
+                    .accessibilityHidden(tab != .general)
+            }
         }
-        .frame(width: 480)
+        .frame(width: Self.size.width, height: Self.size.height)
     }
 }
 
@@ -28,52 +50,58 @@ private struct ConnectionSettings: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            Form {
-                Picker("Protocol", selection: Binding(
-                    get: { draft.transferProtocol },
-                    set: { draft.selectProtocol($0) }
-                )) {
-                    Text("SFTP").tag(TransferProtocol.sftp)
-                    Text("FTP").tag(TransferProtocol.ftp)
-                }
-                .pickerStyle(.segmented)
-
-                LabeledContent("Server") {
-                    HStack(spacing: 6) {
-                        TextField("", text: $draft.host, prompt: Text("files.example.com")).labelsHidden()
-                        Text(":").foregroundStyle(.secondary)
-                        TextField("Port", text: $draft.port).labelsHidden().frame(width: 64)
+            ScrollView {
+                VStack(alignment: .leading, spacing: 14) {
+                    VStack(alignment: .leading, spacing: 5) {
+                        Text("Connection type").font(.system(size: 12, weight: .medium)).foregroundStyle(.secondary)
+                        Picker("", selection: Binding(
+                            get: { draft.transferProtocol },
+                            set: { draft.selectProtocol($0) }
+                        )) {
+                            Text("SFTP").tag(TransferProtocol.sftp)
+                            Text("FTP").tag(TransferProtocol.ftp)
+                        }
+                        .pickerStyle(.segmented)
+                        .labelsHidden()
+                        .frame(width: 170)
                     }
-                }
-                TextField("Username", text: $draft.username)
-                SecureField("Password", text: $draft.password)
-                LabeledContent("Remote folder") {
-                    HStack(spacing: 6) {
-                        TextField("", text: $draft.remoteDirectory).labelsHidden()
-                            .font(.system(size: 12, design: .monospaced))
-                        Button("Browse…") {
-                            guard draft.isValid else { draft.showProblems = true; return }
-                            browsePath = RemotePath.normalizedDirectory(draft.remoteDirectory)
-                            showBrowser = true
+                    HStack(alignment: .top, spacing: 12) {
+                        FormField("Host", text: $draft.host, prompt: "files.example.com")
+                        FormField("Port", text: $draft.port).frame(width: 96)
+                    }
+                    HStack(alignment: .top, spacing: 12) {
+                        FormField("Username", text: $draft.username)
+                        FormField("Password", text: $draft.password, secure: true)
+                    }
+                    VStack(alignment: .leading, spacing: 5) {
+                        Text("Remote folder").font(.system(size: 12, weight: .medium)).foregroundStyle(.secondary)
+                        HStack(spacing: 8) {
+                            TextField("", text: $draft.remoteDirectory)
+                                .textFieldStyle(.roundedBorder)
+                                .font(.system(size: 12, design: .monospaced))
+                            Button("Browse…") {
+                                guard draft.isValid else { draft.showProblems = true; return }
+                                browsePath = RemotePath.normalizedDirectory(draft.remoteDirectory)
+                                showBrowser = true
+                            }
                         }
                     }
-                }
 
-                ForEach(draft.problems, id: \.self) { Text($0).font(.callout).foregroundStyle(.red) }
+                    ForEach(draft.problems, id: \.self) { Text($0).font(.callout).foregroundStyle(.red) }
 
-                HStack(spacing: 12) {
-                    Button("Test Connection") {
-                        draft.showProblems = true
-                        guard draft.isValid else { return }
-                        tester.test(draft, using: model.browser)
+                    HStack(spacing: 12) {
+                        Button("Test Connection") {
+                            draft.showProblems = true
+                            guard draft.isValid else { return }
+                            tester.test(draft, using: model.browser)
+                        }
+                        .disabled(tester.state == .testing)
+                        status
                     }
-                    .disabled(tester.state == .testing)
-                    status
-                }
 
-                if draft.transferProtocol == .sftp, let fingerprint = model.hostKeyFingerprint(for: draft.config) {
-                    LabeledContent("Server identity") {
-                        VStack(alignment: .trailing, spacing: 4) {
+                    if draft.transferProtocol == .sftp, let fingerprint = model.hostKeyFingerprint(for: draft.config) {
+                        HStack(alignment: .firstTextBaseline, spacing: 8) {
+                            Text("Server identity").font(.system(size: 12, weight: .medium)).foregroundStyle(.secondary)
                             Text(fingerprint)
                                 .font(.system(size: 10, design: .monospaced))
                                 .foregroundStyle(.secondary)
@@ -85,8 +113,9 @@ private struct ConnectionSettings: View {
                         }
                     }
                 }
+                .padding(.horizontal, 48)
+                .padding(.vertical, 18)
             }
-            .formStyle(.grouped)
 
             Divider()
             HStack {
@@ -99,7 +128,8 @@ private struct ConnectionSettings: View {
                     .keyboardShortcut(.defaultAction)
                     .buttonStyle(.borderedProminent)
             }
-            .padding(12)
+            .padding(.horizontal, 22)
+            .frame(height: 60)
         }
         .onAppear(perform: load)
         .onChange(of: draft.config) { tester.reset(); saved = false }

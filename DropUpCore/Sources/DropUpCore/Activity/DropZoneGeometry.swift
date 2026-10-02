@@ -34,9 +34,10 @@ public enum DropZoneGeometry {
         return dx * dx + dy * dy <= radius * radius
     }
 
-    /// Panel frame: hangs below the icon, right edges aligned when possible, and never leaves the screen.
+    /// Panel frame: hangs directly below the icon, centered on it, and shifts sideways only as far as
+    /// needed to stay on the screen.
     public static func panelFrame(iconFrame: CGRect, visibleScreenFrame: CGRect, size: CGSize = panelSize) -> CGRect {
-        var x = iconFrame.maxX - size.width + 10
+        var x = iconFrame.midX - size.width / 2
         x = min(x, visibleScreenFrame.maxX - size.width - 8)
         x = max(x, visibleScreenFrame.minX + 8)
         let y = min(iconFrame.minY, visibleScreenFrame.maxY) - gapBelowMenubar - size.height

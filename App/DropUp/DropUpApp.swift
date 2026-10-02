@@ -9,5 +9,12 @@ struct DropUpApp: App {
         // files dragged onto the icon) and the Onboarding and Settings windows (see WindowCoordinator).
         // The app still needs one scene, so this one is empty.
         Settings { EmptyView() }
+            .commands {
+                // While a window is open DropUp has a menu bar, and "Settings…" there should open the real window.
+                CommandGroup(replacing: .appSettings) {
+                    Button("Settings…") { appDelegate.showSettings() }
+                        .keyboardShortcut(",")
+                }
+            }
     }
 }
