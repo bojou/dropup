@@ -78,6 +78,13 @@ public struct UploadActivity: Equatable, Sendable {
     public var batchItems: [Item] { items.filter { batchIDs.contains($0.id) } }
     public var batchTotal: Int { items.filter { batchIDs.contains($0.id) }.count }
     public var batchDone: Int { items.filter { batchIDs.contains($0.id) && $0.state.isFinished }.count }
+    /// Whether anything in the current batch failed, for choosing which sound to play when it is done.
+    public var batchHadFailure: Bool {
+        items.contains { item in
+            guard batchIDs.contains(item.id), case .failed = item.state else { return false }
+            return true
+        }
+    }
     public var isBusy: Bool { items.contains { !$0.state.isFinished } }
 
     /// Overall progress across the current batch: every file dropped since the queue was last idle,

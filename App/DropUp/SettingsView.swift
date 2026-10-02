@@ -239,9 +239,14 @@ private struct GeneralSettings: View {
                 ))
                 if let loginError { Text(loginError).font(.callout).foregroundStyle(.red) }
             }
-            Section("When uploads finish") {
+            Section {
                 Toggle("Show a notification", isOn: preference(\.notifyWhenDone))
                 Toggle("Play a sound", isOn: preference(\.playSound))
+            } header: {
+                Text("When uploads finish")
+            } footer: {
+                Text("A lower sound plays when an upload failed.")
+                    .font(.system(size: 11))
             }
             Section {
                 Picker("Same file name", selection: preference(\.conflictPolicy)) {
@@ -293,11 +298,19 @@ private struct GeneralSettings: View {
                     }
                 }
             }
+            if preferences.recentLimit == 0 {
+                Toggle("Also hide failed uploads", isOn: preference(\.hideFailedUploads))
+                if preferences.hideFailedUploads {
+                    Label("You may miss failed uploads. The menubar icon still shows a cross until you open DropUp, and you still get a notification if those are on, but nothing is listed to read or retry.", systemImage: "exclamationmark.triangle.fill")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.orange)
+                }
+            }
             Toggle("Hide file names", isOn: preference(\.hideRecentNames))
         } header: {
             Text("Recent uploads")
         } footer: {
-            Text("Failed uploads follow the same rules as the rest. With the list off, a failed upload stays until you dismiss it or the clearing time passes. Anything but “When DropUp quits” keeps the list when DropUp is closed and opened again. Hidden names show as “Uploaded file”, in notifications too.")
+            Text("Failed uploads follow the same rules as the rest. With the list off, a failed upload still stays until you dismiss it or the clearing time passes, unless you hide failed uploads too. Anything but “When DropUp quits” keeps the list when DropUp is closed and opened again. Hidden names show as “Uploaded file” (in notifications too) and are taken out of error messages.")
                 .font(.system(size: 11))
         }
     }

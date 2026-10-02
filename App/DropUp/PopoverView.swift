@@ -318,7 +318,7 @@ private struct UploadRow: View {
         case .succeeded:
             return "\(total) · \(Format.ago(item.finishedAt, now: now))"
         case .failed(let message):
-            return message
+            return ActivityText.failureMessage(message, for: item, hidingNames: hidesNames)
         case .cancelled:
             return "Cancelled"
         }
