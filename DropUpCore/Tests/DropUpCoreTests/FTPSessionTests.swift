@@ -25,8 +25,8 @@ struct FTPSessionTests {
         #expect(server.commandLog == [
             "USER me", "PASS ***", "OPTS UTF8 ON", "TYPE I", "EPSV", "STOR /drops/photo.png", "QUIT",
         ])
-        // 600 KB in 256 KB chunks.
-        #expect(reported.value == [262_144, 524_288, 600_000])
+        // 0 once the server has accepted the file, then 600 KB in 256 KB chunks.
+        #expect(reported.value == [0, 262_144, 524_288, 600_000])
         #expect(server.openedEndpoints == ["ftp.example.com:21", "ftp.example.com:5000"])
     }
 
@@ -60,10 +60,34 @@ struct FTPSessionTests {
         defer { temp.remove() }
         let server = FakeFTPServer()
         server.readOnlyPaths = ["/drops/a.txt"]
+        let reported = Locked<[Int64]>([])
 
         let session = try await connect(server)
         await #expect(throws: UploaderError.serverRejected(code: 553, message: "Permission denied")) {
-            try await session.upload(fileURL: try temp.file(named: "a.txt"), to: "/drops/a.txt") { _ in }
+            try await session.upload(fileURL: try temp.file(named: "a.txt"), to: "/drops/a.txt") { sent in
+                reported.mutate { $0.append(sent) }
+            }
+        }
+        // The server never took the file, so nothing was reported and nothing is the caller's to clean up.
+        #expect(reported.value.isEmpty)
+    }
+
+    @Test func deletesAFile() async throws {
+        let server = FakeFTPServer()
+        server.seed("/drops/a.txt")
+        let session = try await connect(server)
+
+        try await session.deleteFile(atPath: "/drops/a.txt")
+
+        #expect(server.file("/drops/a.txt") == nil)
+        #expect(server.commandLog.contains("DELE /drops/a.txt"))
+    }
+
+    @Test func deletingAMissingFileIsRejected() async throws {
+        let server = FakeFTPServer()
+        let session = try await connect(server)
+        await #expect(throws: UploaderError.serverRejected(code: 550, message: "No such file")) {
+            try await session.deleteFile(atPath: "/drops/missing.txt")
         }
     }
 
@@ -114,6 +138,9 @@ struct FTPSessionTests {
         await #expect(throws: UploaderError.invalidRemotePath) {
             try await session.upload(fileURL: try temp.file(named: "a.txt"), to: "/drops/a\r\nDELE x") { _ in }
         }
+        await #expect(throws: UploaderError.invalidRemotePath) {
+            try await session.deleteFile(atPath: "/drops/a\r\nDELE x")
+        }
         #expect(!server.commandLog.contains { $0.hasPrefix("DELE") })
     }
 
@@ -125,8 +152,9 @@ struct FTPSessionTests {
         let session = try await connect(server)
 
         let task = Task {
-            try await session.upload(fileURL: file, to: "/drops/big.bin") { _ in
-                withUnsafeCurrentTask { $0?.cancel() }
+            try await session.upload(fileURL: file, to: "/drops/big.bin") { sent in
+                // Cancel once data is flowing, not at the 0 that announces the file.
+                if sent > 0 { withUnsafeCurrentTask { $0?.cancel() } }
             }
         }
         await #expect(throws: CancellationError.self) { try await task.value }

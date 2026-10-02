@@ -125,6 +125,8 @@ final class FakeFTPServer: ByteStreamOpener, @unchecked Sendable {
             if readOnlyPaths.contains(argument) { return "553 Permission denied" }
             storingPath = argument
             return "150 Opening data connection"
+        case "DELE":
+            return files.removeValue(forKey: argument) != nil ? "250 Deleted" : "550 No such file"
         case "MLSD", "LIST":
             if verb == "MLSD", !supportsMLSD { return "500 MLSD not understood" }
             guard let dataStream else { return "425 Use PASV first" }

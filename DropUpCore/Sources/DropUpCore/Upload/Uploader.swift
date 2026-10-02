@@ -28,13 +28,18 @@ public protocol ServerSession: Sendable {
     func listDirectories(atPath path: String) async throws -> [String]
 
     /// Sends the file to `remotePath`, replacing anything already there.
-    /// `progress` receives the total number of bytes sent so far.
+    /// `progress` receives the total number of bytes sent so far. It is called with 0 as soon as the
+    /// server has created or emptied `remotePath`, before any data is sent, so a caller can tell
+    /// that the file on the server is now this upload's to clean up.
     /// Must stop promptly with `CancellationError` when the task is cancelled.
     func upload(
         fileURL: URL,
         to remotePath: String,
         progress: @escaping @Sendable (Int64) -> Void
     ) async throws
+
+    /// Deletes the file at `remotePath`.
+    func deleteFile(atPath remotePath: String) async throws
 
     /// Logs out and closes the connection. Never throws.
     func close() async

@@ -1,32 +1,52 @@
 import Foundation
 @testable import DropUpCore
 
-/// An in-memory server session. Records uploads, reports progress in two steps,
+/// An in-memory server session. Records uploads and deletions, reports progress in two steps,
 /// and can be scripted to fail or to hang until cancelled.
+/// Like a real session, it reports progress 0 once the remote file exists.
 final class FakeSession: ServerSession, @unchecked Sendable {
     private let lock = NSLock()
     private var _existing: Set<String>
     private var _uploads: [String] = []
+    private var _deletions: [String] = []
     private var _closeCount = 0
     private let error: (any Error)?
     private let hangUntilCancelled: Bool
+    private let hangAfterCreatingFile: Bool
+    private let deleteError: (any Error)?
+    private let hangOnDelete: Bool
     let folders: [String: [String]]
 
+    /// - Parameters:
+    ///   - hangUntilCancelled: waits for cancellation before the server has created the file.
+    ///   - hangAfterCreatingFile: creates the file, then waits for cancellation (a half-sent upload).
+    ///   - deleteError: makes `deleteFile` fail.
+    ///   - hangOnDelete: makes `deleteFile` wait until it is cancelled.
     init(
         existing: Set<String> = [],
         folders: [String: [String]] = [:],
         error: (any Error)? = nil,
-        hangUntilCancelled: Bool = false
+        hangUntilCancelled: Bool = false,
+        hangAfterCreatingFile: Bool = false,
+        deleteError: (any Error)? = nil,
+        hangOnDelete: Bool = false
     ) {
         _existing = existing
         self.folders = folders
         self.error = error
         self.hangUntilCancelled = hangUntilCancelled
+        self.hangAfterCreatingFile = hangAfterCreatingFile
+        self.deleteError = deleteError
+        self.hangOnDelete = hangOnDelete
     }
 
     /// Remote paths in the order uploads started.
     var uploads: [String] { lock.withLock { _uploads } }
+    /// Remote paths in the order they were deleted.
+    var deletions: [String] { lock.withLock { _deletions } }
     var closeCount: Int { lock.withLock { _closeCount } }
+
+    func exists(_ path: String) -> Bool { lock.withLock { _existing.contains(path) } }
 
     func fileExists(atPath path: String) async throws -> Bool {
         lock.withLock { _existing.contains(path) }
@@ -40,15 +60,28 @@ final class FakeSession: ServerSession, @unchecked Sendable {
     func upload(fileURL: URL, to remotePath: String, progress: @escaping @Sendable (Int64) -> Void) async throws {
         lock.withLock { _uploads.append(remotePath) }
         if let error { throw error }
-        if hangUntilCancelled {
-            while true {
-                try await Task.sleep(nanoseconds: 1_000_000)
-            }
-        }
+        if hangUntilCancelled { try await Self.hang() }
+        lock.withLock { _ = _existing.insert(remotePath) }
+        progress(0)
+        if hangAfterCreatingFile { try await Self.hang() }
         let size = Int64((try? Data(contentsOf: fileURL).count) ?? 0)
         progress(size / 2)
         progress(size)
-        lock.withLock { _ = _existing.insert(remotePath) }
+    }
+
+    func deleteFile(atPath remotePath: String) async throws {
+        if hangOnDelete { try await Self.hang() }
+        if let deleteError { throw deleteError }
+        lock.withLock {
+            _existing.remove(remotePath)
+            _deletions.append(remotePath)
+        }
+    }
+
+    private static func hang() async throws {
+        while true {
+            try await Task.sleep(nanoseconds: 1_000_000)
+        }
     }
 
     func close() async {
@@ -70,6 +103,7 @@ final class FakeConnector: ServerConnector, ConnectorFactory, @unchecked Sendabl
 
     var connectionCount: Int { lock.withLock { _connections.count } }
     var passwords: [String] { lock.withLock { _connections.map(\.1) } }
+    var configs: [ServerConfig] { lock.withLock { _connections.map(\.0) } }
 
     func connect(to config: ServerConfig, password: String) async throws -> any ServerSession {
         lock.withLock { _connections.append((config, password)) }

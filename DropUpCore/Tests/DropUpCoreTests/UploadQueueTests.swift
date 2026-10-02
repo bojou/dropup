@@ -212,6 +212,113 @@ struct UploadQueueTests {
         #expect(connector.session.closeCount == 1)
     }
 
+    @Test func cancelDeletesTheHalfSentFileFromTheServer() async throws {
+        let temp = try TempFiles()
+        defer { temp.remove() }
+        let session = FakeSession(hangAfterCreatingFile: true)
+        let connector = FakeConnector(session: session)
+        let queue = makeQueue(config: config, connector: connector)
+
+        let ids = await queue.enqueue([try temp.file(named: "big.bin")])
+        try await eventually { session.exists("/drops/big.bin") }
+        await queue.cancel(ids[0])
+        await queue.waitUntilIdle()
+        let events = await collect(queue)
+
+        #expect(events.contains(.cancelled(id: ids[0])))
+        #expect(session.deletions == ["/drops/big.bin"])
+        #expect(!session.exists("/drops/big.bin"))
+        // The interrupted connection is dropped and a fresh one does the cleanup.
+        #expect(connector.connectionCount == 2)
+    }
+
+    @Test func cancelBeforeTheServerCreatesTheFileLeavesTheExistingOneAlone() async throws {
+        let temp = try TempFiles()
+        defer { temp.remove() }
+        // Replacing is on, so the path holds the user's own file until the server starts the new upload.
+        let session = FakeSession(existing: ["/drops/report.pdf"], hangUntilCancelled: true)
+        let connector = FakeConnector(session: session)
+        let queue = makeQueue(config: config, preferences: Preferences(conflictPolicy: .replace), connector: connector)
+
+        let ids = await queue.enqueue([try temp.file(named: "report.pdf")])
+        try await eventually { session.uploads.count == 1 }
+        await queue.cancel(ids[0])
+        await queue.waitUntilIdle()
+        let events = await collect(queue)
+
+        #expect(events.contains(.cancelled(id: ids[0])))
+        #expect(session.deletions.isEmpty)
+        #expect(session.exists("/drops/report.pdf"))
+    }
+
+    @Test func cleanupGoesToTheServerTheUploadUsed() async throws {
+        let temp = try TempFiles()
+        defer { temp.remove() }
+        let settings = InMemorySettingsStore(config: config)
+        let credentials = InMemoryCredentialStore()
+        try credentials.setPassword("secret", for: config.credentialKey)
+        let session = FakeSession(hangAfterCreatingFile: true)
+        let connector = FakeConnector(session: session)
+        let queue = UploadQueue(settings: settings, credentials: credentials, connectors: connector, progressInterval: 0)
+
+        let ids = await queue.enqueue([try temp.file(named: "big.bin")])
+        try await eventually { session.exists("/drops/big.bin") }
+        // The user points DropUp at another server while the upload is running.
+        let other = ServerConfig(transferProtocol: .sftp, host: "other.example.com", username: "me", remoteDirectory: "/elsewhere")
+        try settings.saveServerConfig(other)
+        try credentials.setPassword("other-secret", for: other.credentialKey)
+        await queue.cancel(ids[0])
+        await queue.waitUntilIdle()
+
+        #expect(connector.configs == [config, config])
+        #expect(connector.passwords == ["secret", "secret"])
+        #expect(session.deletions == ["/drops/big.bin"])
+    }
+
+    @Test func aCancelStaysCancelledWhenTheCleanupFails() async throws {
+        let temp = try TempFiles()
+        defer { temp.remove() }
+        let session = FakeSession(hangAfterCreatingFile: true, deleteError: UploaderError.serverRejected(code: 550, message: "Nope"))
+        let connector = FakeConnector(session: session)
+        let queue = makeQueue(config: config, connector: connector)
+
+        let ids = await queue.enqueue([try temp.file(named: "big.bin")])
+        try await eventually { session.exists("/drops/big.bin") }
+        await queue.cancel(ids[0])
+        await queue.waitUntilIdle()
+        let events = await collect(queue)
+
+        #expect(events.contains(.cancelled(id: ids[0])))
+        #expect(!events.contains { if case .failed = $0 { true } else { false } })
+        #expect(session.exists("/drops/big.bin"))
+    }
+
+    @Test func aStuckCleanupDoesNotBlockTheQueueForever() async throws {
+        let temp = try TempFiles()
+        defer { temp.remove() }
+        let session = FakeSession(hangAfterCreatingFile: true, hangOnDelete: true)
+        let connector = FakeConnector(session: session)
+        let queue = UploadQueue(
+            settings: InMemorySettingsStore(config: config),
+            credentials: {
+                let credentials = InMemoryCredentialStore()
+                try? credentials.setPassword("secret", for: config.credentialKey)
+                return credentials
+            }(),
+            connectors: connector,
+            progressInterval: 0,
+            cleanupTimeout: 0.05
+        )
+
+        let ids = await queue.enqueue([try temp.file(named: "big.bin")])
+        try await eventually { session.exists("/drops/big.bin") }
+        await queue.cancel(ids[0])
+        await queue.waitUntilIdle()
+        let events = await collect(queue)
+
+        #expect(events.contains(.cancelled(id: ids[0])))
+    }
+
     @Test func cancelAllEmptiesTheQueue() async throws {
         let temp = try TempFiles()
         defer { temp.remove() }
