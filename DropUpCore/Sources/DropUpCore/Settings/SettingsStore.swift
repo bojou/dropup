@@ -14,22 +14,63 @@ public struct Preferences: Codable, Equatable, Sendable {
     public var conflictPolicy: ConflictPolicy
     public var notifyWhenDone: Bool
     public var playSound: Bool
-    /// How many finished uploads the popover's Recent list keeps.
+    /// How many finished uploads the popover's Recent list keeps. Zero keeps none (see `RecentPolicy`).
     public var recentLimit: Int
+    /// When the Recent list empties itself. The defaults keep it as it always was: it lasts until DropUp quits.
+    public var recentClearMode: RecentClearMode
+    /// For `RecentClearMode.custom`: this many of `recentClearUnit`.
+    public var recentClearAmount: Int
+    public var recentClearUnit: RecentClearUnit
+    /// Shows "Uploaded file" in the Recent list and in notifications instead of the file's name.
+    public var hideRecentNames: Bool
 
-    public static let recentLimitOptions = [5, 10, 20]
+    public static let recentLimitOptions = [5, 10, 25, 50]
+    public static let recentClearAmountRange = 1...999
 
     public init(
         conflictPolicy: ConflictPolicy = .keepBoth,
         notifyWhenDone: Bool = true,
         playSound: Bool = false,
-        recentLimit: Int = 10
+        recentLimit: Int = 10,
+        recentClearMode: RecentClearMode = .onQuit,
+        recentClearAmount: Int = 2,
+        recentClearUnit: RecentClearUnit = .hours,
+        hideRecentNames: Bool = false
     ) {
         self.conflictPolicy = conflictPolicy
         self.notifyWhenDone = notifyWhenDone
         self.playSound = playSound
         self.recentLimit = recentLimit
+        self.recentClearMode = recentClearMode
+        self.recentClearAmount = recentClearAmount
+        self.recentClearUnit = recentClearUnit
+        self.hideRecentNames = hideRecentNames
     }
+
+    /// The counts the Keep picker offers: the fixed ones, plus the saved count when an earlier version let it be
+    /// something else (such as 20). Off is not in the list; it is zero.
+    public var recentLimitChoices: [Int] {
+        Array(Set(Self.recentLimitOptions + (recentLimit > 0 ? [recentLimit] : []))).sorted()
+    }
+
+    /// How long finished uploads stay listed, or nil if the clock never removes them.
+    public var recentLifetime: TimeInterval? {
+        switch recentClearMode {
+        case .onQuit, .never: nil
+        case .hour: 3_600
+        case .day: 86_400
+        case .week: 604_800
+        case .custom:
+            Double(min(max(recentClearAmount, Self.recentClearAmountRange.lowerBound), Self.recentClearAmountRange.upperBound)) * recentClearUnit.seconds
+        }
+    }
+
+    public var recentPolicy: RecentPolicy {
+        RecentPolicy(limit: max(recentLimit, 0), lifetime: recentLifetime)
+    }
+
+    /// Whether the Recent list is kept between launches. Anything but "when DropUp quits" asks for that.
+    public var recentSurvivesQuit: Bool { recentClearMode != .onQuit }
 
     // Decodes field by field so preferences saved by an older version keep working
     // when new fields are added.
@@ -40,6 +81,10 @@ public struct Preferences: Codable, Equatable, Sendable {
         notifyWhenDone = (try? container.decode(Bool.self, forKey: .notifyWhenDone)) ?? defaults.notifyWhenDone
         playSound = (try? container.decode(Bool.self, forKey: .playSound)) ?? defaults.playSound
         recentLimit = (try? container.decode(Int.self, forKey: .recentLimit)) ?? defaults.recentLimit
+        recentClearMode = (try? container.decode(RecentClearMode.self, forKey: .recentClearMode)) ?? defaults.recentClearMode
+        recentClearAmount = (try? container.decode(Int.self, forKey: .recentClearAmount)) ?? defaults.recentClearAmount
+        recentClearUnit = (try? container.decode(RecentClearUnit.self, forKey: .recentClearUnit)) ?? defaults.recentClearUnit
+        hideRecentNames = (try? container.decode(Bool.self, forKey: .hideRecentNames)) ?? defaults.hideRecentNames
     }
 }
 

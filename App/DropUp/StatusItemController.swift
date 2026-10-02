@@ -96,9 +96,9 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
             button.toolTip = model.config == nil ? "Click to set up DropUp" : "Drop files here to upload"
         case .uploading(let fraction):
             let active = model.activity.active
-            let name = active.first?.fileName ?? ""
+            let name = model.preferences.hideRecentNames ? "" : " \(active.first?.fileName ?? "")"
             let more = active.count > 1 ? " (+\(active.count - 1) more)" : ""
-            button.toolTip = "Uploading \(name)\(more): \(Int(fraction * 100))%"
+            button.toolTip = "Uploading\(name)\(more): \(Int(fraction * 100))%"
         case .succeeded:
             button.toolTip = "Upload finished"
         case .failed:

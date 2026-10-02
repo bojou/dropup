@@ -35,8 +35,17 @@ public enum ActivityText {
         return parts.joined(separator: " · ")
     }
 
+    /// What the list shows for an upload: its name, or with names hidden a plain word that says what happened to it.
+    public static func displayName(of item: UploadActivity.Item, hidingNames: Bool) -> String {
+        guard hidingNames else { return item.fileName }
+        let thing = item.isFolder ? "folder" : "file"
+        if case .succeeded = item.state { return "Uploaded \(thing)" }
+        return thing.capitalized
+    }
+
     /// What to tell the user when a batch finishes, or nil when there is nothing to say (everything was cancelled).
-    public static func completionNotice(_ activity: UploadActivity) -> (title: String, body: String)? {
+    /// With `hidingNames` the notice says how many went through, but not what they were called.
+    public static func completionNotice(_ activity: UploadActivity, hidingNames: Bool = false) -> (title: String, body: String)? {
         var uploaded: [UploadActivity.Item] = []
         var failed: [UploadActivity.Item] = []
         for item in activity.batchItems {
@@ -46,20 +55,25 @@ public enum ActivityText {
             default: break
             }
         }
+        func names(_ items: [UploadActivity.Item], more: Bool = false) -> String {
+            hidingNames ? "" : items.prefix(3).map(\.fileName).joined(separator: ", ") + (more ? "…" : "")
+        }
         switch (uploaded.count, failed.count) {
         case (0, 0):
             return nil
         case (1, 0):
-            return ("Uploaded", uploaded[0].fileName)
+            return ("Uploaded", hidingNames ? displayName(of: uploaded[0], hidingNames: true) : uploaded[0].fileName)
         case (let count, 0):
-            return ("Uploaded \(count) files", uploaded.prefix(3).map(\.fileName).joined(separator: ", ") + (count > 3 ? "…" : ""))
+            return ("Uploaded \(count) files", names(uploaded, more: count > 3))
         case (0, 1):
-            if case .failed(let message) = failed[0].state { return ("Upload failed", "\(failed[0].fileName): \(message)") }
+            if case .failed(let message) = failed[0].state {
+                return ("Upload failed", hidingNames ? message : "\(failed[0].fileName): \(message)")
+            }
             return nil
         case (0, let count):
-            return ("\(count) uploads failed", failed.prefix(3).map(\.fileName).joined(separator: ", "))
+            return ("\(count) uploads failed", names(failed))
         case (let ok, let bad):
-            return ("\(ok) uploaded, \(bad) failed", failed.prefix(3).map(\.fileName).joined(separator: ", "))
+            return ("\(ok) uploaded, \(bad) failed", names(failed))
         }
     }
 }

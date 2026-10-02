@@ -248,19 +248,78 @@ private struct GeneralSettings: View {
                     Text("Keep both (add a number)").tag(ConflictPolicy.keepBoth)
                     Text("Replace the existing file").tag(ConflictPolicy.replace)
                 }
-                Picker("Recent list", selection: preference(\.recentLimit)) {
-                    ForEach(Preferences.recentLimitOptions, id: \.self) { Text("Show the last \($0) uploads").tag($0) }
-                }
             } footer: {
                 Text("“Same file name” is what happens when the folder already has a file with that name, whether you upload one or move or paste one into it in Browse. A replaced file can’t be brought back.")
                     .font(.system(size: 11))
             }
+            recentSection
             Section {
                 LabeledContent("Version", value: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "")
             }
         }
         .formStyle(.grouped)
         .onAppear { openAtLogin = LaunchAtLogin.isEnabled }
+    }
+
+    /// How the popover's Recent list is kept.
+    private var recentSection: some View {
+        let preferences = model.preferences
+        return Section {
+            Picker("Keep recent uploads", selection: preference(\.recentLimit)) {
+                Text("Off").tag(0)
+                ForEach(preferences.recentLimitChoices, id: \.self) { Text("The last \($0)").tag($0) }
+            }
+            Picker("Clear automatically", selection: preference(\.recentClearMode)) {
+                Text("When DropUp quits").tag(RecentClearMode.onQuit)
+                Text("Never").tag(RecentClearMode.never)
+                Text("After 1 hour").tag(RecentClearMode.hour)
+                Text("After 1 day").tag(RecentClearMode.day)
+                Text("After 1 week").tag(RecentClearMode.week)
+                Text("After a time I choose…").tag(RecentClearMode.custom)
+            }
+            if preferences.recentClearMode == .custom {
+                LabeledContent("Clear after") {
+                    HStack(spacing: 8) {
+                        TextField("Amount", value: clearAmount, format: .number)
+                            .multilineTextAlignment(.trailing)
+                            .frame(width: 56)
+                        Picker("Unit", selection: preference(\.recentClearUnit)) {
+                            ForEach(RecentClearUnit.allCases, id: \.self) { unit in
+                                Text(Self.name(of: unit, for: preferences.recentClearAmount)).tag(unit)
+                            }
+                        }
+                        .labelsHidden()
+                        .fixedSize()
+                    }
+                }
+            }
+            Toggle("Hide file names", isOn: preference(\.hideRecentNames))
+        } header: {
+            Text("Recent uploads")
+        } footer: {
+            Text("Failed uploads follow the same rules as the rest. With the list off, a failed upload stays until you dismiss it or the clearing time passes. Anything but “When DropUp quits” keeps the list when DropUp is closed and opened again. Hidden names show as “Uploaded file”, in notifications too.")
+                .font(.system(size: 11))
+        }
+    }
+
+    /// The custom clearing time's amount, kept within what `Preferences` accepts.
+    private var clearAmount: Binding<Int> {
+        Binding(
+            get: { model.preferences.recentClearAmount },
+            set: { value in
+                let range = Preferences.recentClearAmountRange
+                model.updatePreferences { $0.recentClearAmount = min(max(value, range.lowerBound), range.upperBound) }
+            }
+        )
+    }
+
+    private static func name(of unit: RecentClearUnit, for amount: Int) -> String {
+        let single = amount == 1
+        switch unit {
+        case .minutes: return single ? "minute" : "minutes"
+        case .hours: return single ? "hour" : "hours"
+        case .days: return single ? "day" : "days"
+        }
     }
 
     private func preference<Value>(_ keyPath: WritableKeyPath<Preferences, Value>) -> Binding<Value> {
