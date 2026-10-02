@@ -146,6 +146,21 @@ struct DropZoneGeometryTests {
         #expect(farLeft.minX >= screen.minX + 8)
     }
 
+    @Test func panelIsCenteredUnderTheIconWhenThereIsRoom() {
+        let middle = CGRect(x: 700, y: 875, width: 32, height: 25)
+        let frame = DropZoneGeometry.panelFrame(iconFrame: middle, visibleScreenFrame: screen)
+        #expect(frame.midX == middle.midX)
+        #expect(frame.maxY < middle.minY)
+    }
+
+    @Test func panelOnlyShiftsAsFarAsTheScreenEdgeRequires() {
+        let nearRightEdge = CGRect(x: 1_380, y: 875, width: 32, height: 25)
+        let frame = DropZoneGeometry.panelFrame(iconFrame: nearRightEdge, visibleScreenFrame: screen)
+        #expect(frame.maxX == screen.maxX - 8)
+        // Still under the icon, not hanging off to one side of it.
+        #expect(frame.minX < nearRightEdge.minX && frame.maxX > nearRightEdge.maxX)
+    }
+
     @Test func stayingOpenToleratesDriftAroundThePanel() {
         let frame = DropZoneGeometry.panelFrame(iconFrame: icon, visibleScreenFrame: screen)
         let justOutside = CGPoint(x: frame.minX - 10, y: frame.midY - 100)

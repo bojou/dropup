@@ -113,10 +113,7 @@ struct OnboardingView: View {
             }
             HStack(alignment: .top, spacing: 12) {
                 field("Username", text: $draft.username, prompt: "")
-                VStack(alignment: .leading, spacing: 5) {
-                    Text("Password").font(.system(size: 12, weight: .medium)).foregroundStyle(.secondary)
-                    SecureField("", text: $draft.password).textFieldStyle(.roundedBorder)
-                }
+                FormField("Password", text: $draft.password, secure: true)
             }
             ForEach(draft.problems, id: \.self) { Text($0).font(.callout).foregroundStyle(.red) }
             HStack(spacing: 12) {
@@ -206,10 +203,7 @@ struct OnboardingView: View {
     }
 
     private func field(_ label: String, text: Binding<String>, prompt: String) -> some View {
-        VStack(alignment: .leading, spacing: 5) {
-            Text(label).font(.system(size: 12, weight: .medium)).foregroundStyle(.secondary)
-            TextField("", text: text, prompt: Text(prompt)).textFieldStyle(.roundedBorder)
-        }
+        FormField(label, text: text, prompt: prompt)
     }
 
     private var footer: some View {

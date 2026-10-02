@@ -23,7 +23,7 @@ targets:
         CFBundleDisplayName: DropUp
         CFBundleShortVersionString: "$(MARKETING_VERSION)"
         CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
-        LSUIElement: true # menubar only, no Dock icon
+        LSUIElement: true # starts menubar-only; WindowCoordinator adds a Dock icon while a window is open
         LSApplicationCategoryType: public.app-category.utilities
         NSHumanReadableCopyright: ""
     settings:
