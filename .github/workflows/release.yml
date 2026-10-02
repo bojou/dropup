@@ -79,6 +79,11 @@ jobs:
             echo "::error::The certificate has no 'Developer ID Application' identity. Export the Developer ID Application certificate with its private key."
             exit 1
           fi
+          # The certificate holder's name is not for the run logs. It stays inside the signature of the app, as
+          # for every signed app, but a public repo should not print it as well.
+          echo "::add-mask::$IDENTITY"
+          NAME="$(printf '%s' "$IDENTITY" | sed -E 's/^Developer ID Application: (.*) \([A-Z0-9]+\)$/\1/')"
+          if [ -n "$NAME" ] && [ "$NAME" != "$IDENTITY" ]; then echo "::add-mask::$NAME"; fi
           echo "SIGNING_IDENTITY=$IDENTITY" >> "$GITHUB_ENV"
 
       - name: Sign the app
