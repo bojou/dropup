@@ -17,7 +17,7 @@ public struct DragExportError: Error, Equatable, Sendable, LocalizedError {
 public actor DragExport {
     private let queue: DownloadQueue
     private let parent: URL
-    private let fileManager: FileManager
+    private var fileManager: FileManager { .default }
     private var finished: [UUID: Result<URL, any Error>] = [:]
     private var waiting: [UUID: CheckedContinuation<URL, any Error>] = [:]
     private var progressHandlers: [UUID: @Sendable (UploadProgress) -> Void] = [:]
@@ -25,12 +25,10 @@ public actor DragExport {
     /// - Parameter parent: the local folder to fetch into. Each fetch makes a folder of its own inside it.
     public init(
         connectors: any ConnectorFactory,
-        parent: URL = FileManager.default.temporaryDirectory.appendingPathComponent("DropUp-drag", isDirectory: true),
-        fileManager: FileManager = .default
+        parent: URL = FileManager.default.temporaryDirectory.appendingPathComponent("DropUp-drag", isDirectory: true)
     ) {
-        queue = DownloadQueue(connectors: connectors, fileManager: fileManager)
+        queue = DownloadQueue(connectors: connectors)
         self.parent = parent
-        self.fileManager = fileManager
         Task { [weak self, events = queue.events] in
             for await event in events {
                 await self?.handle(event)
