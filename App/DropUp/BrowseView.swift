@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import UniformTypeIdentifiers
 import DropUpCore
 
 /// The Browse window: every folder and file on the server, with drag-and-drop uploads into the folder on screen,
@@ -308,7 +309,8 @@ struct BrowseView: View {
         } rows: {
             ForEach(visible) { entry in
                 TableRow(entry)
-                    .draggable(dragText(for: entry))
+                    // Inside the window a drag carries text that names the item. Dropped on the Mac, it is fetched then.
+                    .itemProvider { dragProvider(for: entry) }
                     // Dropping dragged items on a folder moves them into it; dropping files from the Mac uploads them into it.
                     .dropDestination(for: String.self) { texts in
                         guard entry.kind == .folder else { return }
@@ -638,10 +640,47 @@ struct BrowseView: View {
         return true
     }
 
-    // MARK: Dragging items inside the window
+    // MARK: Dragging items
 
     private func dragText(for entry: RemoteEntry) -> String {
         EntryDrag(server: browse.credentialKey, folder: browse.path, name: entry.name, isFolder: entry.kind == .folder).text
+    }
+
+    /// What a dragged row carries. Inside this window it is text naming the item, for moves. For the Finder and other
+    /// apps it is a promise of the file or folder: nothing is downloaded until something is dropped and asks for it.
+    private func dragProvider(for entry: RemoteEntry) -> NSItemProvider {
+        let provider = NSItemProvider()
+        provider.suggestedName = entry.name
+        provider.registerObject(dragText(for: entry) as NSString, visibility: .ownProcess)
+        // A link can't be fetched safely (it may lead anywhere), so it only moves within the window.
+        guard entry.kind != .link else { return provider }
+
+        let isFolder = entry.kind == .folder
+        let item = RemoteDownload(remotePath: RemotePath.appending(entry.name, to: browse.path), size: entry.size, isFolder: isFolder)
+        let config = browse.config
+        let password = browse.password
+        let export = model.dragExport
+        let fileType = (UTType(filenameExtension: (entry.name as NSString).pathExtension)).flatMap { $0.isDynamic ? nil : $0 } ?? .data
+        provider.registerFileRepresentation(
+            forTypeIdentifier: (isFolder ? UTType.folder : fileType).identifier,
+            fileOptions: [],
+            visibility: .all
+        ) { completion in
+            let progress = Progress(totalUnitCount: 100)
+            let task = Task {
+                do {
+                    let url = try await export.fetch(item, from: config, password: password) { update in
+                        progress.completedUnitCount = Int64(update.fraction * 100)
+                    }
+                    completion(url, false, nil)
+                } catch {
+                    completion(nil, false, error)
+                }
+            }
+            progress.cancellationHandler = { task.cancel() }
+            return progress
+        }
+        return provider
     }
 
     /// Moves what was dragged into `destination`. Dragging one of several selected rows takes the whole selection along.
