@@ -10,13 +10,17 @@ final class BrowseModel {
     /// A change to the server that is running.
     struct Operation: Equatable {
         var title: String
-        /// Items removed so far, for a delete.
-        var count: Int?
+        /// A few words on how far it has got, like "12 removed" or the name of the item being copied.
+        var detail: String?
+        /// 0...1 when the change can say how far along it is.
+        var fraction: Double?
         var canCancel: Bool
     }
 
-    /// Items that were cut and wait for Paste. They stay where they are until pasted.
+    /// Items that were cut or copied and wait for Paste. They stay where they are until pasted.
     struct Clipboard: Equatable {
+        enum Mode { case cut, copy }
+        var mode: Mode
         var folder: String
         var entries: [RemoteEntry]
     }
@@ -192,7 +196,7 @@ final class BrowseModel {
         let folder = path
         run("Deleting \(Self.count(items))…", canCancel: true) { [weak self] session in
             let result = try await session.delete(items, in: folder) { removed in
-                Task { @MainActor in self?.operation?.count = removed }
+                Task { @MainActor in self?.operation?.detail = "\(removed) removed" }
             }
             return ("deleted", result)
         }
@@ -202,16 +206,46 @@ final class BrowseModel {
         operationTask?.cancel()
     }
 
-    // MARK: Cut and paste
+    // MARK: Cut, copy and paste
 
     func cut(_ items: [RemoteEntry]) {
-        clipboard = items.isEmpty ? nil : Clipboard(folder: path, entries: items)
+        clipboard = items.isEmpty ? nil : Clipboard(mode: .cut, folder: path, entries: items)
     }
 
-    /// Moves the cut items into the folder on screen, or into one of its folders.
+    func copyToClipboard(_ items: [RemoteEntry]) {
+        clipboard = items.isEmpty ? nil : Clipboard(mode: .copy, folder: path, entries: items)
+    }
+
+    func clearClipboard() {
+        clipboard = nil
+    }
+
+    /// Moves the cut items, or copies the copied ones, into the folder on screen or into one of its folders.
     func paste(into folderName: String? = nil) {
         guard let clipboard else { return }
-        move(clipboard.entries, from: clipboard.folder, to: folderName.map { RemotePath.appending($0, to: path) } ?? path)
+        let destination = folderName.map { RemotePath.appending($0, to: path) } ?? path
+        switch clipboard.mode {
+        case .cut: move(clipboard.entries, from: clipboard.folder, to: destination)
+        case .copy: copy(clipboard.entries, from: clipboard.folder, to: destination)
+        }
+    }
+
+    /// Makes a copy of each item next to it, called "name copy".
+    func duplicate(_ items: [RemoteEntry]) {
+        copy(items, from: path, to: path)
+    }
+
+    private func copy(_ items: [RemoteEntry], from folder: String, to destination: String) {
+        guard !items.isEmpty else { return }
+        run("Copying \(Self.count(items))…", canCancel: true) { [weak self] session in
+            let result = try await session.copy(items, from: folder, to: destination) { progress in
+                Task { @MainActor in
+                    self?.operation?.detail = progress.name
+                    self?.operation?.fraction = progress.total > 0 ? progress.fraction : nil
+                }
+            }
+            return ("copied", result)
+        }
     }
 
     // MARK: Running a change
@@ -225,7 +259,7 @@ final class BrowseModel {
     ) {
         guard operation == nil else { return }
         problem = nil
-        operation = Operation(title: title, count: nil, canCancel: canCancel)
+        operation = Operation(title: title, detail: nil, fraction: nil, canCancel: canCancel)
         let folder = path
         operationTask = Task {
             var shouldSelect = name
@@ -233,7 +267,8 @@ final class BrowseModel {
                 if let outcome = try await work(session) {
                     problem = Self.describe(outcome.result, verb: outcome.verb)
                     if outcome.result.completed == 0 { shouldSelect = nil }
-                    if outcome.result.isComplete, clipboard != nil { clipboard = nil }
+                    // Cut items have left where they were once they are moved or deleted. Copied ones can be pasted again.
+                    if ["moved", "deleted"].contains(outcome.verb), outcome.result.isComplete, clipboard?.mode == .cut { clipboard = nil }
                 }
             } catch is CancellationError {
                 shouldSelect = nil
@@ -254,7 +289,12 @@ final class BrowseModel {
 
     /// Nil when everything went through. Otherwise the first few refusals, one per line.
     static func describe(_ result: FileOperationResult, verb: String) -> String? {
-        guard !result.failures.isEmpty else { return nil }
+        guard !result.failures.isEmpty else {
+            guard result.skipped > 0 else { return nil }
+            return result.skipped == 1
+                ? "Copied. A link inside the folders was left out."
+                : "Copied. \(result.skipped) links inside the folders were left out."
+        }
         let total = result.completed + result.failures.count
         let head = total == 1
             ? "“\(result.failures[0].name)” couldn't be \(verb)."

@@ -11,11 +11,24 @@ public actor BrowseSession {
     private var session: (any ServerSession)?
     private var isBusy = false
     private var waiting: [CheckedContinuation<Void, Never>] = []
+    private let scratchParent: URL
+    private let cleanupTimeout: Double
 
-    public init(connectors: any ConnectorFactory, config: ServerConfig, password: String) {
+    /// - Parameters:
+    ///   - scratchParent: a local folder to stage copies in. Each copy makes a folder of its own inside and removes it again.
+    ///   - cleanupTimeout: seconds to spend deleting the half-sent file of a failed or cancelled copy before giving up.
+    public init(
+        connectors: any ConnectorFactory,
+        config: ServerConfig,
+        password: String,
+        scratchParent: URL = FileManager.default.temporaryDirectory,
+        cleanupTimeout: Double = 15
+    ) {
         self.connectors = connectors
         self.config = config
         self.password = password
+        self.scratchParent = scratchParent
+        self.cleanupTimeout = cleanupTimeout
     }
 
     /// The items directly inside the folder `path`, folders first.
@@ -47,9 +60,77 @@ public actor BrowseSession {
         try await perform { try await FileOperations.delete(entries, in: folder, session: $0, progress: progress) }
     }
 
+    /// Copies items into another folder, or the same one. See `FileOperations.copy`.
+    /// Files travel through this Mac, so `progress` follows the whole trip. Nothing is replaced.
+    public func copy(
+        _ entries: [RemoteEntry],
+        from folder: String,
+        to destination: String,
+        progress: @escaping @Sendable (CopyProgress) -> Void = { _ in }
+    ) async throws -> FileOperationResult {
+        let scratch = scratchParent.appendingPathComponent("DropUp-copy-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: scratch, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: scratch) }
+
+        // Once the server has been changed, starting over on a new connection would copy the same items a second time.
+        let changed = ChangeFlag()
+        // A few updates a second are plenty for a progress bar. The last one always goes through.
+        let throttle = ProgressThrottle(interval: 0.1, total: 1)
+        let report: @Sendable (CopyProgress) -> Void = { update in
+            if throttle.shouldReport(update.done >= update.total ? 1 : 0) { progress(update) }
+        }
+        return try await perform(mayRetry: { !changed.isSet }) { session in
+            try await FileOperations.copy(
+                entries,
+                from: folder,
+                to: destination,
+                session: session,
+                scratch: scratch,
+                began: { changed.set() },
+                leftBehind: { await self.removeLeftover(at: $0) },
+                progress: report
+            )
+        }
+    }
+
+    /// Deletes the half-sent file of a copy that stopped, over a new connection because the one that sent it can't be trusted.
+    /// Best effort: if the server can't be reached or refuses, the file stays and the copy still reports why it stopped.
+    private func removeLeftover(at path: String) async {
+        await close()
+        let (connectors, config, password, timeout) = (connectors, config, password, cleanupTimeout)
+        // Its own task, so that cancelling the copy doesn't also cancel the cleanup.
+        await Task.detached {
+            do {
+                try await withTimeout(seconds: timeout) {
+                    let session = try await connectors.connector(for: config.transferProtocol).connect(to: config, password: password)
+                    do {
+                        try await session.deleteFile(atPath: path)
+                    } catch {
+                        await session.close()
+                        throw error
+                    }
+                    await session.close()
+                }
+            } catch {
+                // The file stays. Nothing more can be done from here.
+            }
+        }.value
+    }
+
+    private final class ChangeFlag: @unchecked Sendable {
+        private let lock = NSLock()
+        private var value = false
+        var isSet: Bool { lock.withLock { value } }
+        func set() { lock.withLock { value = true } }
+    }
+
     /// Runs `operation` on the open connection, one at a time. A connection the server dropped while idle is replaced and
     /// the operation tried once more; for a change to the server that is safe because the first try never got an answer.
-    private func perform<T: Sendable>(_ operation: @Sendable (any ServerSession) async throws -> T) async throws -> T {
+    /// `mayRetry` can say no when the operation had already changed something before the connection failed.
+    private func perform<T: Sendable>(
+        mayRetry: @Sendable () -> Bool = { true },
+        _ operation: @Sendable (any ServerSession) async throws -> T
+    ) async throws -> T {
         await acquire()
         defer { release() }
         try Task.checkCancellation()
@@ -58,7 +139,7 @@ public actor BrowseSession {
             do {
                 return try await operation(session)
             } catch {
-                guard await handle(error) == .retryOnFreshConnection else { throw error }
+                guard await handle(error) == .retryOnFreshConnection, mayRetry() else { throw error }
                 try Task.checkCancellation()
             }
         }

@@ -20,6 +20,7 @@ final class FakeFileSystem: ServerSession, @unchecked Sendable {
     private var contents: [String: Data] = [:]
     private var _hangingUploads: Set<String> = []
     private var _uploads: [String] = []
+    private var _failingUploads: [String: any Error] = [:]
 
     /// Lists a link to a folder as a plain folder, as some servers' machine-readable listings do.
     var reportsLinksAsFolders = false
@@ -39,6 +40,9 @@ final class FakeFileSystem: ServerSession, @unchecked Sendable {
 
     /// Makes an upload of `path` create the file, then wait until it is cancelled: a half-sent file.
     func hangUpload(of path: String) { lock.withLock { _ = _hangingUploads.insert(path) } }
+
+    /// Makes an upload of `path` create the file, then fail with `error`: a server that runs out of room halfway.
+    func failUpload(of path: String, with error: any Error) { lock.withLock { _failingUploads[path] = error } }
 
     /// Remote paths in the order uploads started.
     var uploads: [String] { lock.withLock { _uploads } }
@@ -174,6 +178,7 @@ final class FakeFileSystem: ServerSession, @unchecked Sendable {
             return _hangingUploads.contains(remotePath)
         }
         progress(0)
+        if let error = lock.withLock({ _failingUploads[remotePath] }) { throw error }
         if hangs {
             while true { try await Task.sleep(nanoseconds: 1_000_000) }
         }
