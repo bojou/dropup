@@ -108,8 +108,9 @@ jobs:
       - name: Build the DMG
         run: |
           mkdir dmg
+          # Only the app, no Applications shortcut: dragging installs without running any DropUp code, so
+          # nothing could offer to eject afterwards. Double-clicking the app lets it install itself.
           cp -R DropUp.app dmg/
-          ln -s /Applications dmg/Applications
           hdiutil create -volname "DropUp" -srcfolder dmg -ov -format UDZO "DropUp-${{ steps.version.outputs.version }}.dmg"
           rm -rf dmg
           if [ "$HAS_CERT" = "true" ]; then
@@ -153,7 +154,7 @@ jobs:
           PRE="${{ steps.signing.outputs.prerelease }}"
           NOTES="${{ steps.signing.outputs.note }}
 
-          Open the DMG and double-click DropUp to install it, or drag it into Applications."
+          Open the DMG and double-click DropUp to install it."
           if gh release view "$TAG" >/dev/null 2>&1; then
             # Re-running for the same version (for example after adding the signing secrets) replaces the DMG.
             gh release upload "$TAG" "$DMG" --clobber

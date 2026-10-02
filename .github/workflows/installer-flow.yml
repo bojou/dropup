@@ -2,7 +2,8 @@ name: Installer flow
 
 # Walks through installing DropUp the way a person does, on real macOS runners, and checks what the app does:
 #
-#   drag          copy DropUp into Applications by hand, open it from there: it asks to eject the disk image.
+#   drag          copy DropUp into Applications by hand (the DMG has no shortcut, but people still do), open it
+#                 from there: it asks to eject the disk image.
 #   double-click  open DropUp inside the disk image: it installs itself into Applications, opens that copy,
 #                 and that copy ejects the disk image and moves the download to the Trash.
 #
@@ -29,7 +30,6 @@ jobs:
           codesign --force --options runtime --sign - DropUp.app
           mkdir dmg
           cp -R DropUp.app dmg/
-          ln -s /Applications dmg/Applications
           hdiutil create -volname "DropUp" -srcfolder dmg -ov -format UDZO DropUp-9.9.9.dmg
       - uses: actions/upload-artifact@v4
         with:
