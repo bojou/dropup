@@ -13,6 +13,15 @@ public struct MountedImage: Equatable, Sendable {
     }
 
     public var imageName: String { imageURL.lastPathComponent }
+
+    /// Whether `url` is on one of this image's volumes.
+    public func contains(_ url: URL) -> Bool {
+        let path = url.standardizedFileURL.resolvingSymlinksInPath().path
+        return mountPoints.contains { mount in
+            let mountPath = mount.standardizedFileURL.resolvingSymlinksInPath().path
+            return path == mountPath || path.hasPrefix(mountPath + "/")
+        }
+    }
 }
 
 /// Finds the DropUp installer disk image left mounted after installing, so the app can offer to eject it
@@ -46,17 +55,17 @@ public enum InstallerImages {
         dismissed: Set<String>,
         holdsApp: (URL) -> Bool
     ) -> MountedImage? {
-        let runningPath = runningAppURL.standardizedFileURL.resolvingSymlinksInPath().path
-        return images.first { image in
+        images.first { image in
             guard image.imageName.lowercased().hasPrefix("dropup"),
                   !dismissed.contains(image.imageURL.path),
                   image.mountPoints.contains(where: holdsApp) else { return false }
-            let runsFromImage = image.mountPoints.contains { mount in
-                let mountPath = mount.standardizedFileURL.resolvingSymlinksInPath().path
-                return runningPath == mountPath || runningPath.hasPrefix(mountPath + "/")
-            }
-            return !runsFromImage
+            return !image.contains(runningAppURL)
         }
+    }
+
+    /// The mounted image that the app at `appURL` is running from, if it is running from one.
+    public static func image(holding appURL: URL, in images: [MountedImage]) -> MountedImage? {
+        images.first { $0.contains(appURL) }
     }
 }
 

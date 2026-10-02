@@ -153,7 +153,7 @@ jobs:
           PRE="${{ steps.signing.outputs.prerelease }}"
           NOTES="${{ steps.signing.outputs.note }}
 
-          Open the DMG and drag DropUp into Applications."
+          Open the DMG and double-click DropUp to install it, or drag it into Applications."
           if gh release view "$TAG" >/dev/null 2>&1; then
             # Re-running for the same version (for example after adding the signing secrets) replaces the DMG.
             gh release upload "$TAG" "$DMG" --clobber

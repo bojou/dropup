@@ -1,25 +1,25 @@
 name: Installer flow
 
-# Walks through installing DropUp the way a person does, on a real macOS runner: build like a release,
-# pack the DMG, mount it, copy the app to Applications, launch it from there, and report what it did.
-# Checks that the "eject the disk image" prompt appears while the DMG is still mounted.
+# Walks through installing DropUp the way a person does, on real macOS runners, and checks what the app does:
+#
+#   drag          copy DropUp into Applications by hand, open it from there: it asks to eject the disk image.
+#   double-click  open DropUp inside the disk image: it installs itself into Applications, opens that copy,
+#                 and that copy ejects the disk image and moves the download to the Trash.
+#
+# The dialogs answer themselves here (DROPUP_ASSUME_YES=1), since nobody is at the keyboard.
+# Run it by hand from the Actions tab after changing the install or eject code.
 
 on:
+  workflow_dispatch:
   push:
     branches: [installer-prompt-fix]
-  workflow_dispatch:
 
 jobs:
-  flow:
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [macos-26]
-    runs-on: ${{ matrix.os }}
+  build:
+    runs-on: macos-15
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
-
       - name: Build and pack like a release
         run: |
           brew install xcodegen
@@ -32,46 +32,84 @@ jobs:
           mkdir dmg
           cp -R DropUp.app dmg/
           ln -s /Applications dmg/Applications
-          mkdir -p "$HOME/Downloads"
-          hdiutil create -volname "DropUp" -srcfolder dmg -ov -format UDZO "$HOME/Downloads/DropUp-9.9.9.dmg"
+          hdiutil create -volname "DropUp" -srcfolder dmg -ov -format UDZO DropUp-9.9.9.dmg
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dmg
+          path: DropUp-9.9.9.dmg
+          retention-days: 1
 
-      - name: Mount, install, launch
+  flow:
+    needs: build
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-15, macos-26]
+        scenario: [drag, double-click]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dmg
+          path: ${{ runner.temp }}/dmg
+
+      - name: Put the download where a browser would
         run: |
+          mkdir -p "$HOME/Downloads"
+          cp "$RUNNER_TEMP/dmg/DropUp-9.9.9.dmg" "$HOME/Downloads/"
           sw_vers
-          DMG="$HOME/Downloads/DropUp-9.9.9.dmg"
-          echo "mounting the way Finder does (open on the .dmg)"
-          perl -e 'alarm shift; exec @ARGV' 20 open "$DMG" || echo "open timed out"
+
+      - name: Mount the disk image the way Finder does
+        run: |
+          perl -e 'alarm shift; exec @ARGV' 20 open "$HOME/Downloads/DropUp-9.9.9.dmg" || echo "open timed out"
           for _ in $(seq 1 30); do [ -d /Volumes/DropUp/DropUp.app ] && break; sleep 1; done
-          [ -d /Volumes/DropUp/DropUp.app ] || { echo "open did not mount it"; exit 1; }
-          echo "mounted by open"
+          [ -d /Volumes/DropUp/DropUp.app ] || { echo "the disk image did not mount"; exit 1; }
           ls -la /Volumes/DropUp
-          echo "--- hdiutil info for the DropUp image"
-          hdiutil info | grep -B2 -A12 'DropUp-9.9.9' || true
-          ditto /Volumes/DropUp/DropUp.app /Applications/DropUp.app
+
+      - name: Start watching DropUp's log
+        run: |
           log stream --level debug --predicate 'subsystem == "app.dropup.DropUp"' > "$RUNNER_TEMP/app.log" 2>&1 &
           sleep 3
-          echo "launching"
-          perl -e 'alarm shift; exec @ARGV' 20 open /Applications/DropUp.app || echo "open failed or timed out"
-          sleep 15
-          echo "--- DropUp process"
-          pgrep -lf DropUp || echo "not running"
-          echo "--- app log (DropUp image lines only)"
-          grep -v 'CoreSimulator\|AssetsV2' "$RUNNER_TEMP/app.log"
-          echo "--- DropUp windows"
+
+      - name: "drag: copy to Applications, open it, expect the eject question"
+        if: matrix.scenario == 'drag'
+        run: |
+          ditto /Volumes/DropUp/DropUp.app /Applications/DropUp.app
+          perl -e 'alarm shift; exec @ARGV' 20 open /Applications/DropUp.app || echo "open timed out"
+          sleep 12
           cat > "$RUNNER_TEMP/windows.swift" <<'EOF'
           import CoreGraphics
           import Foundation
           let all = CGWindowListCopyWindowInfo([.optionAll], kCGNullWindowID) as? [[String: Any]] ?? []
           for w in all where (w[kCGWindowOwnerName as String] as? String) == "DropUp" {
-              print(w[kCGWindowName as String] ?? "-", "layer", w[kCGWindowLayer as String] ?? "?", "onscreen", w[kCGWindowIsOnscreen as String] ?? false, w[kCGWindowBounds as String] ?? "")
+              print("window layer", w[kCGWindowLayer as String] ?? "?", "onscreen", w[kCGWindowIsOnscreen as String] ?? false)
           }
           EOF
           perl -e 'alarm shift; exec @ARGV' 90 swift "$RUNNER_TEMP/windows.swift" || echo "window list failed"
-          perl -e 'alarm shift; exec @ARGV' 20 screencapture -x "$RUNNER_TEMP/shot.png" || echo "no screenshot"
+          echo "--- DropUp log"
+          grep -v 'CoreSimulator\|AssetsV2' "$RUNNER_TEMP/app.log"
+          grep -q 'offering to eject' "$RUNNER_TEMP/app.log" || { echo "FAIL: the eject question was not asked"; exit 1; }
 
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: screenshot
-          path: ${{ runner.temp }}/shot.png
-          if-no-files-found: ignore
+      - name: "double-click: open DropUp inside the disk image, expect it to install and clean up"
+        if: matrix.scenario == 'double-click'
+        run: |
+          perl -e 'alarm shift; exec @ARGV' 20 open --env DROPUP_ASSUME_YES=1 /Volumes/DropUp/DropUp.app || echo "open timed out"
+          for _ in $(seq 1 60); do
+            if [ -d /Applications/DropUp.app ] && [ ! -d /Volumes/DropUp ] && pgrep -f '/Applications/DropUp.app/Contents/MacOS/DropUp' > /dev/null; then break; fi
+            sleep 1
+          done
+          echo "--- DropUp log"
+          grep -v 'CoreSimulator\|AssetsV2' "$RUNNER_TEMP/app.log"
+          echo "--- processes"
+          pgrep -lf 'DropUp.app/Contents/MacOS/DropUp' || echo "none"
+          echo "--- Trash"
+          ls -la "$HOME/.Trash" || true
+          fail=0
+          [ -d /Applications/DropUp.app ] || { echo "FAIL: DropUp was not installed into Applications"; fail=1; }
+          pgrep -f '/Applications/DropUp.app/Contents/MacOS/DropUp' > /dev/null || { echo "FAIL: the installed copy did not open"; fail=1; }
+          pgrep -f '/Volumes/DropUp/DropUp.app/Contents/MacOS/DropUp' > /dev/null && { echo "FAIL: the copy on the disk image is still running"; fail=1; }
+          [ ! -d /Volumes/DropUp ] || { echo "FAIL: the disk image was not ejected"; fail=1; }
+          [ ! -e "$HOME/Downloads/DropUp-9.9.9.dmg" ] || { echo "FAIL: the download is still in Downloads"; fail=1; }
+          [ -e "$HOME/.Trash/DropUp-9.9.9.dmg" ] || { echo "FAIL: the download is not in the Trash"; fail=1; }
+          exit $fail

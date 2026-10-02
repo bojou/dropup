@@ -40,7 +40,7 @@ enum InstallerCleanup {
         alert.addButton(withTitle: dmgStillThere ? "Eject and Move to Trash" : "Eject")
         alert.addButton(withTitle: "Keep")
 
-        guard alert.runModal() == .alertFirstButtonReturn else {
+        guard AutoConfirm.confirms(alert) else {
             UserDefaults.standard.set(Array(kept.union([installer.imageURL.path])), forKey: keptKey)
             return
         }
@@ -61,6 +61,8 @@ enum InstallerCleanup {
     }
 
     private static func showFailure(_ message: String) {
+        log.error("\(message, privacy: .public)")
+        guard !AutoConfirm.isOn else { return }
         let alert = NSAlert()
         alert.alertStyle = .warning
         alert.messageText = "Couldn’t finish cleaning up"
