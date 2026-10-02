@@ -27,6 +27,9 @@ public protocol ServerSession: Sendable {
     /// Names of the folders directly inside `path`, without `.` and `..`.
     func listDirectories(atPath path: String) async throws -> [String]
 
+    /// Everything directly inside the folder `path`, hidden items included, folders first.
+    func listEntries(atPath path: String) async throws -> [RemoteEntry]
+
     /// Sends the file to `remotePath`, replacing anything already there.
     /// `progress` receives the total number of bytes sent so far. It is called with 0 as soon as the
     /// server has created or emptied `remotePath`, before any data is sent, so a caller can tell

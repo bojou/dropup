@@ -99,6 +99,18 @@ public actor FTPSession: ServerSession {
     }
 
     public func listDirectories(atPath path: String) async throws -> [String] {
+        let listing = try await fetchListing(atPath: path)
+        return listing.machineReadable ? FTPListing.directoriesFromMLSD(listing.text) : FTPListing.directoriesFromLIST(listing.text)
+    }
+
+    public func listEntries(atPath path: String) async throws -> [RemoteEntry] {
+        let listing = try await fetchListing(atPath: path)
+        let entries = listing.machineReadable ? FTPListing.entriesFromMLSD(listing.text) : FTPListing.entriesFromLIST(listing.text)
+        return RemoteEntry.sorted(entries)
+    }
+
+    /// Asks for a folder listing: `MLSD`, or `LIST` on servers without it.
+    private func fetchListing(atPath path: String) async throws -> (text: String, machineReadable: Bool) {
         try Self.validate(path)
         var data = try await openDataStream()
         var reply = try await command("MLSD \(path)")
@@ -128,9 +140,7 @@ public actor FTPSession: ServerSession {
         await data.close()
         let done = try await readReply()
         guard done.isPositiveCompletion else { throw Self.rejected(done) }
-
-        let text = String(decoding: bytes, as: UTF8.self)
-        return machineReadable ? FTPListing.directoriesFromMLSD(text) : FTPListing.directoriesFromLIST(text)
+        return (String(decoding: bytes, as: UTF8.self), machineReadable)
     }
 
     public func upload(
@@ -260,6 +270,92 @@ public enum FTPListing {
             return String(fields[8])
         }
         return clean(names)
+    }
+
+    /// Every entry of an MLSD listing: folders, files and symbolic links, with size and modified time when given.
+    public static func entriesFromMLSD(_ text: String) -> [RemoteEntry] {
+        lines(text).compactMap { line -> RemoteEntry? in
+            guard let space = line.firstIndex(of: " ") else { return nil }
+            let name = String(line[line.index(after: space)...])
+            guard !name.isEmpty, name != ".", name != ".." else { return nil }
+            var facts: [String: String] = [:]
+            for fact in line[..<space].split(separator: ";") {
+                guard let equals = fact.firstIndex(of: "=") else { continue }
+                facts[fact[..<equals].lowercased()] = String(fact[fact.index(after: equals)...])
+            }
+            let kind: RemoteEntry.Kind
+            switch facts["type"]?.lowercased() {
+            case "file": kind = .file
+            case "dir": kind = .folder
+            case let type? where type.hasPrefix("os.unix=slink") || type.hasPrefix("os.unix=symlink"): kind = .link
+            default: return nil
+            }
+            return RemoteEntry(
+                name: name,
+                kind: kind,
+                size: kind == .folder ? nil : facts["size"].flatMap { Int64($0) },
+                modified: facts["modify"].flatMap(mlsdDate)
+            )
+        }
+    }
+
+    /// Every entry of a Unix `ls -l` style listing. Times in these listings carry no time zone, so they are read as UTC.
+    public static func entriesFromLIST(_ text: String, now: Date = Date()) -> [RemoteEntry] {
+        lines(text).compactMap { line -> RemoteEntry? in
+            guard let type = line.first, "d-l".contains(type) else { return nil }
+            let fields = line.split(separator: " ", maxSplits: 8, omittingEmptySubsequences: true)
+            guard fields.count == 9 else { return nil }
+            var name = String(fields[8])
+            if type == "l", let arrow = name.range(of: " -> ") { name = String(name[..<arrow.lowerBound]) }
+            guard !name.isEmpty, name != ".", name != ".." else { return nil }
+            let kind: RemoteEntry.Kind = type == "d" ? .folder : (type == "l" ? .link : .file)
+            return RemoteEntry(
+                name: name,
+                kind: kind,
+                size: kind == .folder ? nil : Int64(fields[4]),
+                modified: listDate(month: fields[5], day: fields[6], timeOrYear: fields[7], now: now)
+            )
+        }
+    }
+
+    private static let utc: Calendar = {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "UTC") ?? .gmt
+        return calendar
+    }()
+
+    /// `20260101120000` or `20260101120000.123`, always UTC.
+    private static func mlsdDate(_ value: String) -> Date? {
+        let digits = value.prefix { $0 != "." }
+        guard digits.count == 14, digits.allSatisfy({ ("0"..."9").contains($0) }) else { return nil }
+        let numbers = digits.map { Int(String($0))! }
+        func number(_ range: Range<Int>) -> Int { numbers[range].reduce(0) { $0 * 10 + $1 } }
+        return utc.date(from: DateComponents(
+            year: number(0..<4), month: number(4..<6), day: number(6..<8),
+            hour: number(8..<10), minute: number(10..<12), second: number(12..<14)
+        ))
+    }
+
+    private static let months = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"]
+
+    /// `Sep 10 12:00` (this year, or last year if that would be in the future) or `Sep 10 2025`.
+    private static func listDate(month: Substring, day: Substring, timeOrYear: Substring, now: Date) -> Date? {
+        guard let monthIndex = months.firstIndex(of: month.lowercased()), let day = Int(day) else { return nil }
+        var components = DateComponents(month: monthIndex + 1, day: day)
+        if timeOrYear.contains(":") {
+            let parts = timeOrYear.split(separator: ":").compactMap { Int($0) }
+            guard parts.count == 2 else { return nil }
+            components.hour = parts[0]
+            components.minute = parts[1]
+            components.year = utc.component(.year, from: now)
+            if let date = utc.date(from: components), date > now.addingTimeInterval(24 * 3600) {
+                components.year = (components.year ?? 0) - 1
+            }
+        } else {
+            guard let year = Int(timeOrYear) else { return nil }
+            components.year = year
+        }
+        return utc.date(from: components)
     }
 
     private static func lines(_ text: String) -> [String] {

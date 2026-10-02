@@ -156,6 +156,38 @@ final class SFTPSession: ServerSession, @unchecked Sendable {
         return names.sorted { $0.localizedStandardCompare($1) == .orderedAscending }
     }
 
+    func listEntries(atPath path: String) async throws -> [RemoteEntry] {
+        let listing: [SFTPMessage.Name]
+        do {
+            listing = try await sftp.listDirectory(atPath: path)
+        } catch {
+            throw Self.map(error)
+        }
+        let entries = listing.flatMap(\.components).compactMap { entry -> RemoteEntry? in
+            guard entry.filename != ".", entry.filename != ".." else { return nil }
+            let kind: RemoteEntry.Kind
+            if let permissions = entry.attributes.permissions {
+                switch permissions & 0o170000 {
+                case 0o040000: kind = .folder
+                case 0o120000: kind = .link
+                case 0o100000: kind = .file
+                default: return nil // sockets, devices and pipes
+                }
+            } else if entry.longname.hasPrefix("d") {
+                kind = .folder
+            } else {
+                kind = entry.longname.hasPrefix("l") ? .link : .file
+            }
+            return RemoteEntry(
+                name: entry.filename,
+                kind: kind,
+                size: kind == .folder ? nil : entry.attributes.size.flatMap { Int64(exactly: $0) },
+                modified: entry.attributes.accessModificationTime?.modificationTime
+            )
+        }
+        return RemoteEntry.sorted(entries)
+    }
+
     func upload(fileURL: URL, to remotePath: String, progress: @escaping @Sendable (Int64) -> Void) async throws {
         let handle = try FileHandle(forReadingFrom: fileURL)
         defer { try? handle.close() }

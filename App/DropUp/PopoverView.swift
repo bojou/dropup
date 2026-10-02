@@ -5,6 +5,7 @@ import DropUpCore
 struct PopoverView: View {
     let model: AppModel
     let openSettings: () -> Void
+    let openBrowse: () -> Void
     @State private var isDropTargeted = false
 
     var body: some View {
@@ -153,8 +154,8 @@ struct PopoverView: View {
         }
     }
 
-    /// The server buttons on the left and Quit on the right. A Browse FTP button goes in `folderButtons`; with
-    /// Cancel All and Clear in the list heading, the row has room for it at every state.
+    /// The server buttons on the left and Quit on the right. With Cancel All and Clear in the list heading,
+    /// the row has room for them at every state.
     private var footer: some View {
         HStack {
             folderButtons
@@ -167,6 +168,7 @@ struct PopoverView: View {
     private var folderButtons: some View {
         if model.config != nil {
             FooterButton(title: "Change Folder") { model.isChoosingFolder = true }
+            FooterButton(title: "Browse", action: openBrowse)
         }
     }
 }

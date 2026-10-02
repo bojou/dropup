@@ -1,7 +1,8 @@
 import AppKit
 import SwiftUI
+import DropUpCore
 
-/// Opens the Onboarding and Settings windows.
+/// Opens the Onboarding, Settings and Browse windows.
 ///
 /// DropUp normally lives in the menubar only (LSUIElement). While one of its windows is open it also
 /// gets a Dock icon, so the window is easy to find again after switching to another app. Closing the
@@ -11,6 +12,8 @@ final class WindowCoordinator: NSObject, NSWindowDelegate {
     private let model: AppModel
     private var onboardingWindow: NSWindow?
     private var settingsWindow: NSWindow?
+    private var browseWindow: NSWindow?
+    private var browseModel: BrowseModel?
 
     init(model: AppModel) {
         self.model = model
@@ -34,6 +37,26 @@ final class WindowCoordinator: NSObject, NSWindowDelegate {
             settingsWindow = makeWindow(title: "DropUp Settings", content: view)
         }
         present(settingsWindow)
+    }
+
+    /// The window for browsing the server and dropping files into its folders. One at a time.
+    func showBrowse() {
+        if browseWindow == nil {
+            guard let browse = model.makeBrowseModel() else { return }
+            browseModel = browse
+            model.onUploadSucceeded = { [weak browse] remotePath in
+                // A file that just landed in the folder on screen should appear without a manual reload.
+                guard let browse, RemotePath.parent(of: remotePath) == browse.path, !browse.isLoading else { return }
+                browse.reload()
+            }
+            let window = makeWindow(title: "Browse \(browse.serverName)", content: BrowseView(model: model, browse: browse))
+            window.styleMask.insert([.resizable, .miniaturizable])
+            window.setContentSize(BrowseView.idealSize)
+            window.contentMinSize = BrowseView.minimumSize
+            window.center()
+            browseWindow = window
+        }
+        present(browseWindow)
     }
 
     private func makeWindow<Content: View>(title: String, content: Content) -> NSWindow {
@@ -63,7 +86,13 @@ final class WindowCoordinator: NSObject, NSWindowDelegate {
         guard let closing = notification.object as? NSWindow else { return }
         // Closing Settings, however it happens, throws away unsaved edits: the next open starts from what is saved.
         if closing === settingsWindow { settingsWindow = nil }
-        let anotherIsOpen = [onboardingWindow, settingsWindow].contains { window in
+        if closing === browseWindow {
+            browseWindow = nil
+            browseModel?.close()
+            browseModel = nil
+            model.onUploadSucceeded = nil
+        }
+        let anotherIsOpen = [onboardingWindow, settingsWindow, browseWindow].contains { window in
             guard let window else { return false }
             return window !== closing && window.isVisible
         }

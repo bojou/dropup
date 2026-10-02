@@ -212,6 +212,33 @@ struct UploadQueueTests {
         #expect(connector.session.closeCount == 1)
     }
 
+    @Test func uploadsIntoAChosenFolderAndKeepsTheConnection() async throws {
+        let temp = try TempFiles()
+        defer { temp.remove() }
+        let connector = FakeConnector(session: FakeSession(uploadDelayMilliseconds: 50))
+        let queue = makeQueue(config: config, connector: connector)
+
+        // The second file is queued while the first is still uploading, so both belong to one run of the queue.
+        await queue.enqueue([try temp.file(named: "a.txt")], toDirectory: "/other/place/")
+        await queue.enqueue([try temp.file(named: "b.txt")])
+        await queue.waitUntilIdle()
+
+        #expect(connector.session.uploads == ["/other/place/a.txt", "/drops/b.txt"])
+        #expect(connector.connectionCount == 1)
+    }
+
+    @Test func numbersAFileInAChosenFolderByThatFoldersContents() async throws {
+        let temp = try TempFiles()
+        defer { temp.remove() }
+        let connector = FakeConnector(session: FakeSession(existing: ["/other/a.txt"]))
+        let queue = makeQueue(config: config, connector: connector)
+
+        await queue.enqueue([try temp.file(named: "a.txt")], toDirectory: "/other")
+        await queue.waitUntilIdle()
+
+        #expect(connector.session.uploads == ["/other/a-1.txt"])
+    }
+
     @Test func cancelDeletesTheHalfSentFileFromTheServer() async throws {
         let temp = try TempFiles()
         defer { temp.remove() }
