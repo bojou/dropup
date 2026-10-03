@@ -81,8 +81,27 @@ final class PosixByteStream: ByteStream, @unchecked Sendable {
         }
     }
 
+    private let lock = NSLock()
+    private var isClosed = false
+
     func close() async {
+        let first = lock.withLock { () -> Bool in
+            defer { isClosed = true }
+            return !isClosed
+        }
+        guard first else { return }
         shutdown(fd, Int32(SHUT_WR))
+        Glibc.close(fd)
+    }
+
+    /// Ends both directions at once, which also wakes a send or receive that another thread is blocked in.
+    func abort() {
+        let first = lock.withLock { () -> Bool in
+            defer { isClosed = true }
+            return !isClosed
+        }
+        guard first else { return }
+        shutdown(fd, Int32(SHUT_RDWR))
         Glibc.close(fd)
     }
 }

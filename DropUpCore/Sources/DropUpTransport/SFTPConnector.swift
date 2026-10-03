@@ -136,6 +136,21 @@ final class SFTPSession: ServerSession, @unchecked Sendable {
         }
     }
 
+    func fileSize(atPath path: String) async throws -> Int64? {
+        do {
+            let attributes = try await sftp.getAttributes(at: path)
+            if let permissions = attributes.permissions, permissions & 0o170000 == 0o040000 { return nil }
+            guard let size = attributes.size.flatMap({ Int64(exactly: $0) }) else { throw UploaderError.cannotResume }
+            return size
+        } catch let status as SFTPMessage.Status where status.errorCode == .noSuchFile {
+            return nil
+        } catch let error as UploaderError {
+            throw error
+        } catch {
+            throw Self.map(error)
+        }
+    }
+
     func listDirectories(atPath path: String) async throws -> [String] {
         let listing: [SFTPMessage.Name]
         do {
@@ -188,21 +203,25 @@ final class SFTPSession: ServerSession, @unchecked Sendable {
         return RemoteEntry.sorted(entries)
     }
 
-    func upload(fileURL: URL, to remotePath: String, progress: @escaping @Sendable (Int64) -> Void) async throws {
+    func upload(fileURL: URL, to remotePath: String, startingAt offset: Int64, progress: @escaping @Sendable (Int64) -> Void) async throws {
         let handle = try FileHandle(forReadingFrom: fileURL)
         defer { try? handle.close() }
 
+        // A server may handle the writes that were in flight when a connection broke out of order, leaving a gap just
+        // before the end of the file. Starting a little earlier writes that stretch again.
+        let start = max(0, offset - Int64(Self.writeSize * Self.writesInFlight))
         let file: SFTPFile
         do {
-            file = try await sftp.openFile(filePath: remotePath, flags: [.write, .create, .truncate])
+            file = try await sftp.openFile(filePath: remotePath, flags: start == 0 ? [.write, .create, .truncate] : [.write, .create])
         } catch {
             throw Self.map(error)
         }
 
-        progress(0)
+        progress(start)
         do {
-            var offset: UInt64 = 0
-            var sent: Int64 = 0
+            try handle.seek(toOffset: UInt64(start))
+            var position = UInt64(start)
+            var sent = start
             try await withThrowingTaskGroup(of: Int.self) { group in
                 var inFlight = 0
                 while true {
@@ -213,8 +232,8 @@ final class SFTPSession: ServerSession, @unchecked Sendable {
                         progress(sent)
                     }
                     guard let chunk = try handle.read(upToCount: Self.writeSize), !chunk.isEmpty else { break }
-                    let at = offset
-                    offset += UInt64(chunk.count)
+                    let at = position
+                    position += UInt64(chunk.count)
                     inFlight += 1
                     group.addTask {
                         try await file.write(ByteBuffer(bytes: chunk), at: at)
@@ -334,8 +353,10 @@ final class SFTPSession: ServerSession, @unchecked Sendable {
     }
 
     func close() async {
-        try? await sftp.close()
+        // The connection first: on a dead link, politely closing the SFTP channel would wait for an answer that never
+        // comes, and a transfer stuck on that link only lets go once the connection is closed under it.
         try? await ssh.close()
+        try? await sftp.close()
     }
 
     private static func map(_ error: Error) -> Error {

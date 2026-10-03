@@ -163,7 +163,8 @@ struct PopoverView: View {
                 // These act on the list, so they sit with its heading and leave the footer for the server buttons.
                 if activity.isBusy {
                     ListButton(title: "Cancel All") { model.cancelAll() }
-                } else {
+                } else if activity.canClear {
+                    // Interrupted uploads stay until they are resumed or removed, so with only those there is nothing to clear.
                     ListButton(title: "Clear", label: "Clear recent uploads") { model.clearFinished() }
                 }
             }
@@ -327,11 +328,15 @@ private struct UploadRow: View {
         .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(isFailure ? Color.red.opacity(0.08) : .clear))
         .onHover { isHovering = $0 }
         .contextMenu {
-            if isFailure, model.canRetry(item.id) {
-                Button("Retry") { model.retry(item.id) }
+            if isFailure || item.state == .interrupted, model.canRetry(item.id) {
+                Button(model.retryTitle(item.id)) { model.retry(item.id) }
             }
-            if canDismiss {
+            if canDismiss, !isRemoving {
                 Button("Remove from List") { model.dismiss(item.id) }
+            }
+            if removalProblem != nil, canDismiss, !isRemoving {
+                // The server can't be reached to take the half-sent file away: the user can still let go of the row.
+                Button("Remove from List Anyway") { model.dismiss(item.id, force: true) }
             }
         }
         .accessibilityElement(children: .combine)
@@ -339,9 +344,18 @@ private struct UploadRow: View {
 
     private var canDismiss: Bool { activity.canDismiss(item) }
 
-    /// The same round cross as Cancel, for taking one finished upload out of the list.
+    private var isRemoving: Bool { model.removing.contains(item.id) }
+
+    /// Why the half-sent file of this upload could not be taken off the server, while its row is still here.
+    private var removalProblem: String? {
+        item.state.isFinished ? model.removalProblems[item.id] : nil
+    }
+
+    /// The same round cross as Cancel, for taking one finished upload out of the list. For an upload that stopped
+    /// with part of its file on the server it is a cancel: the half-sent file is removed too.
     private var dismissButton: some View {
-        Button { model.dismiss(item.id) } label: {
+        let label = item.isResumable ? "Cancel and remove the partly sent file" : "Remove from list"
+        return Button { model.dismiss(item.id) } label: {
             Image(systemName: "xmark")
                 .font(.system(size: 9, weight: .bold))
                 .frame(width: 22, height: 22)
@@ -349,17 +363,24 @@ private struct UploadRow: View {
         }
         .buttonStyle(.plain)
         .foregroundStyle(.secondary)
-        .help("Remove from list")
-        .accessibilityLabel("Remove from list")
+        .disabled(isRemoving)
+        .help(label)
+        .accessibilityLabel(label)
     }
 
     private var isFailure: Bool {
-        if case .failed = item.state { true } else { false }
+        if case .failed = item.state { return true }
+        return removalProblem != nil
     }
 
     private var hidesNames: Bool { model.preferences.hideRecentNames }
 
     private var meta: String {
+        if isRemoving { return "Removing the partly sent file…" }
+        if let problem = removalProblem {
+            let reason = ActivityText.failureMessage(problem, for: item, hidingNames: hidesNames, hiddenPaths: model.hiddenPaths)
+            return "The partly sent file is still on the server. \(reason)"
+        }
         let total = Format.bytes(item.totalBytes)
         // A folder's size is not known until it has been read, which takes a while for a big one.
         let sizeKnown = !item.isFolder || item.totalBytes > 0
@@ -368,15 +389,23 @@ private struct UploadRow: View {
             return sizeKnown ? "\(total) · Waiting" : "Waiting"
         case .uploading:
             guard sizeKnown else { return "Reading the folder…" }
-            let progress = "\(Format.bytes(item.bytesSent)) of \(total)"
-            if let left = ActivityText.timeLeft(activity.secondsRemaining(now: now)), activity.running.first?.id == item.id {
-                return "\(progress) · \(left)"
+            var parts: [String] = []
+            if item.isReconnecting {
+                parts.append("Waiting for connection…")
+            } else if let notice = item.notice {
+                parts.append(notice)
             }
-            return progress
+            parts.append("\(Format.bytes(item.bytesSent)) of \(total)")
+            if !item.isReconnecting, let left = ActivityText.timeLeft(activity.secondsRemaining(now: now)), activity.running.first?.id == item.id {
+                parts.append(left)
+            }
+            return parts.joined(separator: " · ")
         case .succeeded:
             return "\(total) · \(Format.ago(item.finishedAt, now: now))"
         case .failed(let message):
             return ActivityText.failureMessage(message, for: item, hidingNames: hidesNames, hiddenPaths: model.hiddenPaths)
+        case .interrupted:
+            return sizeKnown ? "Interrupted · \(total)" : "Interrupted"
         case .cancelled:
             return "Cancelled"
         }
@@ -408,10 +437,10 @@ private struct UploadRow: View {
                     .frame(width: 22, height: 22)
                     .accessibilityLabel("Uploaded")
             }
-        case .failed:
+        case .failed, .interrupted:
             HStack(spacing: 8) {
                 if model.canRetry(item.id) {
-                    Button("Retry") { model.retry(item.id) }
+                    Button(model.retryTitle(item.id)) { model.retry(item.id) }
                         .controlSize(.small)
                 }
                 if canDismiss { dismissButton }

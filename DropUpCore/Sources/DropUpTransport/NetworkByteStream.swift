@@ -122,6 +122,10 @@ final class NetworkByteStream: ByteStream, @unchecked Sendable {
         connection.cancel()
     }
 
+    func abort() {
+        connection.cancel()
+    }
+
     private static func describe(_ error: NWError) -> String {
         switch error {
         case .posix(let code) where code == .ECONNREFUSED:

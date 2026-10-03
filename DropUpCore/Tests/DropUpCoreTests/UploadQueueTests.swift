@@ -48,7 +48,8 @@ struct UploadQueueTests {
         let (ids, events) = await run(makeQueue(config: config, connector: connector), files: [file])
 
         let id = try #require(ids.first)
-        #expect(events == [
+        // What it takes to resume is reported along the way too; ResumeTests looks at that.
+        #expect(events.filter { if case .resumable = $0 { false } else { true } } == [
             .queued(id: id, fileName: "photo.png", totalBytes: 10),
             .started(id: id),
             .progress(id: id, UploadProgress(bytesSent: 5, totalBytes: 10)),
@@ -160,7 +161,8 @@ struct UploadQueueTests {
     @Test func reconnectsAfterATransferError() async throws {
         let temp = try TempFiles()
         defer { temp.remove() }
-        let connector = FakeConnector(session: FakeSession(error: UploaderError.timedOut))
+        // A refusal is not a lost connection, so nothing waits and tries again: the next file just gets a fresh session.
+        let connector = FakeConnector(session: FakeSession(error: UploaderError.serverRejected(code: 552, message: "Disk full")))
         let files = try ["a.txt", "b.txt"].map { try temp.file(named: $0) }
 
         _ = await run(makeQueue(config: config, connector: connector), files: files)

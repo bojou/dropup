@@ -8,6 +8,13 @@ public protocol ByteStream: Sendable {
     func receive(maxLength: Int) async throws -> Data
     /// Flushes pending data, sends end-of-stream and closes. Never throws.
     func close() async
+    /// Stops the stream at once, without flushing: a send or receive that is waiting fails, even on a connection whose
+    /// other end has gone quiet, where `close` would wait for data that is never taken. Never throws.
+    func abort()
+}
+
+extension ByteStream {
+    public func abort() {}
 }
 
 public protocol ByteStreamOpener: Sendable {
@@ -46,6 +53,8 @@ public actor FTPSession: ServerSession {
     private var pendingReplies: [FTPReply] = []
     private var epsvUnsupported = false
     private var isClosed = false
+    /// The newest data connection, so closing the session can stop a transfer that is stuck on it.
+    private var activeData: (any ByteStream)?
 
     private static let chunkSize = 256 * 1024
 
@@ -93,6 +102,23 @@ public actor FTPSession: ServerSession {
             // SIZE is an extension (RFC 3659). Fall back to MDTM, which older servers often have.
             let mdtm = try await command("MDTM \(path)")
             return mdtm.code == 213
+        default:
+            throw Self.rejected(size)
+        }
+    }
+
+    public func fileSize(atPath path: String) async throws -> Int64? {
+        try Self.validate(path)
+        let size = try await command("SIZE \(path)")
+        switch size.code {
+        case 213:
+            guard let bytes = Int64(size.message.trimmingCharacters(in: .whitespaces)) else { throw UploaderError.cannotResume }
+            return bytes
+        case 550:
+            return nil
+        case 500, 501, 502, 504:
+            // Without SIZE (RFC 3659) there is no telling how much of a file has arrived.
+            throw UploaderError.cannotResume
         default:
             throw Self.rejected(size)
         }
@@ -160,21 +186,31 @@ public actor FTPSession: ServerSession {
     public func upload(
         fileURL: URL,
         to remotePath: String,
+        startingAt offset: Int64,
         progress: @escaping @Sendable (Int64) -> Void
     ) async throws {
         try Self.validate(remotePath)
         let file = try FileHandle(forReadingFrom: fileURL)
         defer { try? file.close() }
+        if offset > 0 { try file.seek(toOffset: UInt64(offset)) }
 
         let data = try await openDataStream()
+        if offset > 0 {
+            // REST names where in the file the next STOR starts writing. 350 says the server will.
+            let rest = try await command("REST \(offset)")
+            guard rest.isPositiveIntermediate else {
+                await data.close()
+                throw UploaderError.cannotResume
+            }
+        }
         let stor = try await command("STOR \(remotePath)")
         guard stor.code == 150 || stor.code == 125 else {
             await data.close()
             throw Self.rejected(stor)
         }
 
-        progress(0)
-        var sent: Int64 = 0
+        progress(offset)
+        var sent = offset
         do {
             while true {
                 try Task.checkCancellation()
@@ -261,10 +297,14 @@ public actor FTPSession: ServerSession {
     public func close() async {
         guard !isClosed else { return }
         isClosed = true
-        _ = try? await withTimeout(seconds: 3) { [control] in
+        // A transfer stuck on a data connection whose server went quiet waits for the connection, not for this session,
+        // so the connection is what has to be stopped.
+        activeData?.abort()
+        let said = (try? await withTimeout(seconds: 3) { [control] in
             try await control.send(Data("QUIT\r\n".utf8))
-        }
-        await control.close()
+        }) != nil
+        // Closing politely waits for data to be taken; with a server that has gone quiet it never would.
+        if said { await control.close() } else { control.abort() }
     }
 
     // MARK: Control connection
@@ -305,7 +345,14 @@ public actor FTPSession: ServerSession {
         guard let endpoint else { throw UploaderError.connectionFailed("No passive mode.") }
         // Always reuse the control connection's host. Servers behind NAT often advertise
         // a private address in PASV replies that the client can't reach.
-        return try await opener.open(host: host, port: endpoint.port)
+        let stream = try await opener.open(host: host, port: endpoint.port)
+        guard !isClosed else {
+            // The session was closed while the connection was being made.
+            stream.abort()
+            throw UploaderError.connectionFailed("The connection was closed.")
+        }
+        activeData = stream
+        return stream
     }
 
     /// Rejects values that would let a file name inject extra FTP commands.

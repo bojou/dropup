@@ -12,6 +12,11 @@ final class FakeFTPServer: ByteStreamOpener, @unchecked Sendable {
     var supportsEPSV = true
     var supportsMLSD = true
     var supportsSIZE = true
+    var supportsREST = true
+    /// A server that says yes to REST but then writes from the start of the file anyway.
+    var ignoresRestOnStore = false
+    /// A server that stops taking data after this many bytes of a file, without an error: a connection gone quiet.
+    var stallsDataAfter: Int?
     /// Paths that STOR refuses with 553.
     var readOnlyPaths: Set<String> = []
     /// Folder path → subfolder names.
@@ -27,6 +32,8 @@ final class FakeFTPServer: ByteStreamOpener, @unchecked Sendable {
     private var user: String?
     private var dataStream: FakeDataStream?
     private var storingPath: String?
+    private var restartOffset = 0
+    private var storingOffset = 0
     private var renamingFrom: String?
 
     // MARK: ByteStreamOpener
@@ -59,6 +66,9 @@ final class FakeFTPServer: ByteStreamOpener, @unchecked Sendable {
 
     var commandLog: [String] { lock.withLock { commands } }
 
+    /// Whether a transfer is waiting on a data connection that has stopped taking data (see `stallsDataAfter`).
+    var dataConnectionIsStalled: Bool { lock.withLock { dataStream?.isStalled ?? false } }
+
     // MARK: Control channel
 
     fileprivate func receiveFromServer(maxLength: Int) throws -> Data {
@@ -88,7 +98,11 @@ final class FakeFTPServer: ByteStreamOpener, @unchecked Sendable {
             guard stream === dataStream else { return }
             dataStream = nil
             if let path = storingPath {
-                files[path] = stream.received
+                if storingOffset > 0, !ignoresRestOnStore {
+                    files[path] = (files[path] ?? Data()).prefix(storingOffset) + stream.received
+                } else {
+                    files[path] = stream.received
+                }
                 storingPath = nil
                 reply("226 Transfer complete")
             }
@@ -115,10 +129,10 @@ final class FakeFTPServer: ByteStreamOpener, @unchecked Sendable {
             return argument == "I" ? "200 Binary" : "504 Unsupported type"
         case "EPSV":
             guard supportsEPSV else { return "500 EPSV not understood" }
-            dataStream = FakeDataStream(server: self)
+            dataStream = FakeDataStream(server: self, stallsAfter: stallsDataAfter)
             return "229 Entering Extended Passive Mode (|||\(Self.dataPort)|)"
         case "PASV":
-            dataStream = FakeDataStream(server: self)
+            dataStream = FakeDataStream(server: self, stallsAfter: stallsDataAfter)
             // Advertises a private address the client should ignore.
             return "227 Entering Passive Mode (10,0,0,1,\(Self.dataPort / 256),\(Self.dataPort % 256))"
         case "SIZE":
@@ -127,10 +141,16 @@ final class FakeFTPServer: ByteStreamOpener, @unchecked Sendable {
             return "550 No such file"
         case "MDTM":
             return files[argument] != nil ? "213 20260101120000" : "550 No such file"
+        case "REST":
+            guard supportsREST else { return "502 REST not implemented" }
+            restartOffset = Int(argument) ?? 0
+            return "350 Restarting at \(restartOffset)"
         case "STOR":
             guard dataStream != nil else { return "425 Use PASV first" }
             if readOnlyPaths.contains(argument) { return "553 Permission denied" }
             storingPath = argument
+            storingOffset = restartOffset
+            restartOffset = 0
             return "150 Opening data connection"
         case "RETR":
             guard let dataStream else { return "425 Use PASV first" }
@@ -224,8 +244,14 @@ final class FakeDataStream: ByteStream, @unchecked Sendable {
     private weak var server: FakeFTPServer?
     private var _received = Data()
     private var _toSend = Data()
+    private let stallsAfter: Int?
+    private var stalled: CheckedContinuation<Void, any Error>?
+    private var aborted = false
 
-    init(server: FakeFTPServer) { self.server = server }
+    init(server: FakeFTPServer, stallsAfter: Int? = nil) {
+        self.server = server
+        self.stallsAfter = stallsAfter
+    }
 
     var received: Data { lock.withLock { _received } }
     var toSend: Data {
@@ -234,7 +260,32 @@ final class FakeDataStream: ByteStream, @unchecked Sendable {
     }
 
     func send(_ data: Data) async throws {
-        lock.withLock { _received.append(data) }
+        let stalls = lock.withLock { () -> Bool in
+            if let stallsAfter, _received.count >= stallsAfter { return true }
+            _received.append(data)
+            return false
+        }
+        guard stalls else { return }
+        // The other end is not taking data and says nothing: wait here until the connection is stopped.
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, any Error>) in
+            let wasAborted = lock.withLock { () -> Bool in
+                if aborted { return true }
+                stalled = continuation
+                return false
+            }
+            if wasAborted { continuation.resume(throwing: UploaderError.connectionFailed("fake: aborted")) }
+        }
+    }
+
+    var isStalled: Bool { lock.withLock { stalled != nil } }
+
+    func abort() {
+        let waiting = lock.withLock { () -> CheckedContinuation<Void, any Error>? in
+            aborted = true
+            defer { stalled = nil }
+            return stalled
+        }
+        waiting?.resume(throwing: UploaderError.connectionFailed("fake: aborted"))
     }
 
     func receive(maxLength: Int) async throws -> Data {
