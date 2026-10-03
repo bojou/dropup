@@ -1,0 +1,26 @@
+name: Explore Sparkle
+on:
+  push:
+    branches: [update-notice]
+jobs:
+  explore:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - run: brew install xcodegen
+      - name: Print Sparkle headers
+        run: |
+          xcodegen generate
+          xcodebuild -resolvePackageDependencies -project DropUp.xcodeproj -derivedDataPath build > /dev/null 2>&1 || true
+          H=build/SourcePackages/artifacts/sparkle/Sparkle/Sparkle.xcframework/macos-arm64_x86_64/Sparkle.framework/Headers
+          ls "$H"
+          for f in SPUStandardUserDriverDelegate.h SPUUserUpdateState.h SPUStandardUserDriver.h; do
+            echo "=================== $f"
+            cat "$H/$f"
+          done
+          echo "=================== SPUUpdater.h (checkForUpdates and related)"
+          grep -n -B12 -A3 "checkForUpdates\b\|sessionInProgress\|resetUpdateCycle\|canCheckForUpdates" "$H/SPUUpdater.h"
+          echo "=================== SPUUpdaterDelegate.h (postpone relaunch)"
+          grep -n -B14 -A3 "shouldPostponeRelaunch" "$H/SPUUpdaterDelegate.h"
+          echo "=================== SUAppcastItem.h (version strings)"
+          grep -n "displayVersionString\|versionString\|isInformationOnlyUpdate\|isCriticalUpdate" "$H/SUAppcastItem.h"
