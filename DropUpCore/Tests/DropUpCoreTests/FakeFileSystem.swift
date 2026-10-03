@@ -176,7 +176,14 @@ final class FakeFileSystem: ServerSession, @unchecked Sendable {
         }
     }
 
-    func upload(fileURL: URL, to remotePath: String, progress: @escaping @Sendable (Int64) -> Void) async throws {
+    func fileSize(atPath path: String) async throws -> Int64? {
+        lock.withLock {
+            if case .file(let size)? = nodes[path] { return Int64(size) }
+            return nil
+        }
+    }
+
+    func upload(fileURL: URL, to remotePath: String, startingAt offset: Int64, progress: @escaping @Sendable (Int64) -> Void) async throws {
         try await begin("STOR \(remotePath)", failing: remotePath)
         let data = try Data(contentsOf: fileURL)
         let hangs: Bool = try lock.withLock {

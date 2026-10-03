@@ -98,6 +98,23 @@ public actor FTPSession: ServerSession {
         }
     }
 
+    public func fileSize(atPath path: String) async throws -> Int64? {
+        try Self.validate(path)
+        let size = try await command("SIZE \(path)")
+        switch size.code {
+        case 213:
+            guard let bytes = Int64(size.message.trimmingCharacters(in: .whitespaces)) else { throw UploaderError.cannotResume }
+            return bytes
+        case 550:
+            return nil
+        case 500, 501, 502, 504:
+            // Without SIZE (RFC 3659) there is no telling how much of a file has arrived.
+            throw UploaderError.cannotResume
+        default:
+            throw Self.rejected(size)
+        }
+    }
+
     public func listDirectories(atPath path: String) async throws -> [String] {
         let listing = try await fetchListing(atPath: path)
         return listing.machineReadable ? FTPListing.directoriesFromMLSD(listing.text) : FTPListing.directoriesFromLIST(listing.text)
@@ -160,21 +177,31 @@ public actor FTPSession: ServerSession {
     public func upload(
         fileURL: URL,
         to remotePath: String,
+        startingAt offset: Int64,
         progress: @escaping @Sendable (Int64) -> Void
     ) async throws {
         try Self.validate(remotePath)
         let file = try FileHandle(forReadingFrom: fileURL)
         defer { try? file.close() }
+        if offset > 0 { try file.seek(toOffset: UInt64(offset)) }
 
         let data = try await openDataStream()
+        if offset > 0 {
+            // REST names where in the file the next STOR starts writing. 350 says the server will.
+            let rest = try await command("REST \(offset)")
+            guard rest.isPositiveIntermediate else {
+                await data.close()
+                throw UploaderError.cannotResume
+            }
+        }
         let stor = try await command("STOR \(remotePath)")
         guard stor.code == 150 || stor.code == 125 else {
             await data.close()
             throw Self.rejected(stor)
         }
 
-        progress(0)
-        var sent: Int64 = 0
+        progress(offset)
+        var sent = offset
         do {
             while true {
                 try Task.checkCancellation()

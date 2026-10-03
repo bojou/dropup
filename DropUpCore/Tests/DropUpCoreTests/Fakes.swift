@@ -27,6 +27,13 @@ final class FakeSession: ServerSession, @unchecked Sendable {
     private let uploadDelayMilliseconds: UInt64
     private let makeDirectoryDelayMilliseconds: UInt64
     private var _madeDirectories: [String] = []
+    private var _sizes: [String: Int64]
+    private var _offsets: [Int64] = []
+    private var _drops: [Int64]
+    private var _sizeFailure: (any Error)?
+    private let refusesToResume: Bool
+    private let stuckUntilClosed: Bool
+    private var _closed = false
     let folders: [String: [String]]
     let entries: [String: [RemoteEntry]]
 
@@ -43,6 +50,11 @@ final class FakeSession: ServerSession, @unchecked Sendable {
     ///   - listDelayMilliseconds: how long each `listEntries` call takes.
     ///   - uploadDelayMilliseconds: how long each upload takes once the file exists.
     ///   - makeDirectoryDelayMilliseconds: how long each `makeDirectory` takes. It does not notice a cancel, like a real server's reply.
+    ///   - sizes: files the server already holds, with the number of bytes they have (a partly sent upload, say).
+    ///   - drops: for each upload in turn, the number of bytes the server holds when the connection breaks, which makes
+    ///     that upload fail with a lost connection. Uploads after the list is used up go through.
+    ///   - refusesToResume: makes an upload that starts in the middle of a file fail with `cannotResume`.
+    ///   - stuckUntilClosed: after creating the file the upload waits for `close()`, deaf to a cancel, like a transfer on a dead link.
     init(
         existing: Set<String> = [],
         folders: [String: [String]] = [:],
@@ -58,9 +70,17 @@ final class FakeSession: ServerSession, @unchecked Sendable {
         hangOnDelete: Bool = false,
         listDelayMilliseconds: UInt64 = 2,
         uploadDelayMilliseconds: UInt64 = 0,
-        makeDirectoryDelayMilliseconds: UInt64 = 0
+        makeDirectoryDelayMilliseconds: UInt64 = 0,
+        sizes: [String: Int64] = [:],
+        drops: [Int64] = [],
+        refusesToResume: Bool = false,
+        stuckUntilClosed: Bool = false
     ) {
-        _existing = existing
+        _existing = existing.union(sizes.keys)
+        _sizes = sizes
+        _drops = drops
+        self.refusesToResume = refusesToResume
+        self.stuckUntilClosed = stuckUntilClosed
         self.folders = folders
         self.entries = entries
         self.files = files
@@ -75,6 +95,20 @@ final class FakeSession: ServerSession, @unchecked Sendable {
         self.listDelayMilliseconds = listDelayMilliseconds
         self.uploadDelayMilliseconds = uploadDelayMilliseconds
         self.makeDirectoryDelayMilliseconds = makeDirectoryDelayMilliseconds
+    }
+
+    /// The offset each upload started at, in the order uploads started.
+    var uploadOffsets: [Int64] { lock.withLock { _offsets } }
+    /// How many bytes the server holds of `path`, or nil when there is no such file.
+    func size(of path: String) -> Int64? { lock.withLock { _sizes[path] } }
+    /// Makes `fileSize` fail with `error`.
+    func failSizeChecks(with error: any Error) { lock.withLock { _sizeFailure = error } }
+    /// Puts a file of `size` bytes on the server, as if an earlier upload had left it.
+    func hold(_ path: String, size: Int64) {
+        lock.withLock {
+            _existing.insert(path)
+            _sizes[path] = size
+        }
     }
 
     /// Remote paths in the order uploads started.
@@ -101,6 +135,12 @@ final class FakeSession: ServerSession, @unchecked Sendable {
         lock.withLock { _existing.contains(path) }
     }
 
+    func fileSize(atPath path: String) async throws -> Int64? {
+        if let failure = lock.withLock({ _sizeFailure }) { throw failure }
+        if let error { throw error }
+        return lock.withLock { _sizes[path] ?? (_existing.contains(path) ? 0 : nil) }
+    }
+
     func listDirectories(atPath path: String) async throws -> [String] {
         if let error { throw error }
         return folders[path] ?? []
@@ -120,16 +160,36 @@ final class FakeSession: ServerSession, @unchecked Sendable {
         return entries[path] ?? []
     }
 
-    func upload(fileURL: URL, to remotePath: String, progress: @escaping @Sendable (Int64) -> Void) async throws {
-        lock.withLock { _uploads.append(remotePath) }
+    func upload(fileURL: URL, to remotePath: String, startingAt offset: Int64, progress: @escaping @Sendable (Int64) -> Void) async throws {
+        let drop: Int64? = lock.withLock {
+            _closed = false
+            _uploads.append(remotePath)
+            _offsets.append(offset)
+            return _drops.isEmpty ? nil : _drops.removeFirst()
+        }
         if let error { throw error }
+        if offset > 0, refusesToResume { throw UploaderError.cannotResume }
         if hangUntilCancelled { try await Self.hang() }
-        lock.withLock { _ = _existing.insert(remotePath) }
-        progress(0)
+        let size = Int64((try? Data(contentsOf: fileURL).count) ?? 0)
+        lock.withLock {
+            _existing.insert(remotePath)
+            _sizes[remotePath] = offset
+        }
+        progress(offset)
+        if stuckUntilClosed {
+            // Deaf to a cancel: only closing the connection lets go.
+            while !lock.withLock({ _closed }) { try? await Task.sleep(nanoseconds: 1_000_000) }
+            throw UploaderError.connectionFailed("The connection was lost.")
+        }
         if hangAfterCreatingFile { try await Self.hang() }
         if uploadDelayMilliseconds > 0 { try await Task.sleep(nanoseconds: uploadDelayMilliseconds * 1_000_000) }
-        let size = Int64((try? Data(contentsOf: fileURL).count) ?? 0)
-        progress(size / 2)
+        if let drop, drop < size {
+            lock.withLock { _sizes[remotePath] = drop }
+            progress(drop)
+            throw UploaderError.connectionFailed("The connection was lost.")
+        }
+        progress(offset + (size - offset) / 2)
+        lock.withLock { _sizes[remotePath] = size }
         progress(size)
     }
 
@@ -152,6 +212,7 @@ final class FakeSession: ServerSession, @unchecked Sendable {
         if let deleteError { throw deleteError }
         lock.withLock {
             _existing.remove(remotePath)
+            _sizes[remotePath] = nil
             _deletions.append(remotePath)
         }
     }
@@ -177,7 +238,10 @@ final class FakeSession: ServerSession, @unchecked Sendable {
     }
 
     func close() async {
-        lock.withLock { _closeCount += 1 }
+        lock.withLock {
+            _closeCount += 1
+            _closed = true
+        }
     }
 }
 

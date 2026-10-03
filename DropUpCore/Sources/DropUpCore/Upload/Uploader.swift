@@ -24,6 +24,10 @@ public protocol ServerSession: Sendable {
     /// Whether a file (not a folder) exists at `path`.
     func fileExists(atPath path: String) async throws -> Bool
 
+    /// The size in bytes of the file at `path`, or nil when there is no file there. Throws
+    /// `UploaderError.cannotResume` when the server can't say, which tells a caller not to continue a partly sent file.
+    func fileSize(atPath path: String) async throws -> Int64?
+
     /// Names of the folders directly inside `path`, without `.` and `..`.
     func listDirectories(atPath path: String) async throws -> [String]
 
@@ -34,14 +38,18 @@ public protocol ServerSession: Sendable {
     /// a folder, so walking a tree with `listEntries` could lead out of it. The default is `listEntries`.
     func listEntriesWithLinks(atPath path: String) async throws -> [RemoteEntry]
 
-    /// Sends the file to `remotePath`, replacing anything already there.
-    /// `progress` receives the total number of bytes sent so far. It is called with 0 as soon as the
-    /// server has created or emptied `remotePath`, before any data is sent, so a caller can tell
-    /// that the file on the server is now this upload's to clean up.
+    /// Sends the file to `remotePath`, replacing anything already there. With an `offset` above zero it carries on
+    /// instead: `remotePath` already holds the first `offset` bytes of this file (a partly sent copy), and only the rest
+    /// is sent. Throws `UploaderError.cannotResume`, before changing anything, when the server can't do that.
+    /// `progress` receives the number of bytes of the file the server holds so far. It is called first, as soon as
+    /// the server has created or emptied `remotePath` (with 0, or with `offset`), before any data is sent, so a caller
+    /// can tell that the file on the server is now this upload's to clean up. A session may carry on from a little
+    /// before `offset`, to be sure nothing is missing in between, and then reports that smaller number first.
     /// Must stop promptly with `CancellationError` when the task is cancelled.
     func upload(
         fileURL: URL,
         to remotePath: String,
+        startingAt offset: Int64,
         progress: @escaping @Sendable (Int64) -> Void
     ) async throws
 
@@ -77,6 +85,15 @@ extension ServerSession {
     public func listEntriesWithLinks(atPath path: String) async throws -> [RemoteEntry] {
         try await listEntries(atPath: path)
     }
+
+    /// Sends the whole file, replacing anything already at `remotePath`.
+    public func upload(
+        fileURL: URL,
+        to remotePath: String,
+        progress: @escaping @Sendable (Int64) -> Void
+    ) async throws {
+        try await upload(fileURL: fileURL, to: remotePath, startingAt: 0, progress: progress)
+    }
 }
 
 /// Opens sessions for one transfer protocol.
@@ -99,6 +116,8 @@ public enum UploaderError: Error, Equatable, Sendable {
     case hostKeyChanged(fingerprint: String)
     /// The remote path contains characters the protocol cannot carry (such as line breaks).
     case invalidRemotePath
+    /// The server can't carry on a partly sent file: it doesn't know how big the file is, or won't start in the middle.
+    case cannotResume
 }
 
 extension UploaderError: LocalizedError {
@@ -116,6 +135,8 @@ extension UploaderError: LocalizedError {
             "The server's identity changed (now \(fingerprint)). If you expected this, forget the old key in Settings."
         case .invalidRemotePath:
             "The file or folder name can't be used on the server."
+        case .cannotResume:
+            "The server can't carry on a partly sent file."
         }
     }
 }

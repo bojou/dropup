@@ -12,6 +12,9 @@ final class FakeFTPServer: ByteStreamOpener, @unchecked Sendable {
     var supportsEPSV = true
     var supportsMLSD = true
     var supportsSIZE = true
+    var supportsREST = true
+    /// A server that says yes to REST but then writes from the start of the file anyway.
+    var ignoresRestOnStore = false
     /// Paths that STOR refuses with 553.
     var readOnlyPaths: Set<String> = []
     /// Folder path → subfolder names.
@@ -27,6 +30,8 @@ final class FakeFTPServer: ByteStreamOpener, @unchecked Sendable {
     private var user: String?
     private var dataStream: FakeDataStream?
     private var storingPath: String?
+    private var restartOffset = 0
+    private var storingOffset = 0
     private var renamingFrom: String?
 
     // MARK: ByteStreamOpener
@@ -88,7 +93,11 @@ final class FakeFTPServer: ByteStreamOpener, @unchecked Sendable {
             guard stream === dataStream else { return }
             dataStream = nil
             if let path = storingPath {
-                files[path] = stream.received
+                if storingOffset > 0, !ignoresRestOnStore {
+                    files[path] = (files[path] ?? Data()).prefix(storingOffset) + stream.received
+                } else {
+                    files[path] = stream.received
+                }
                 storingPath = nil
                 reply("226 Transfer complete")
             }
@@ -127,10 +136,16 @@ final class FakeFTPServer: ByteStreamOpener, @unchecked Sendable {
             return "550 No such file"
         case "MDTM":
             return files[argument] != nil ? "213 20260101120000" : "550 No such file"
+        case "REST":
+            guard supportsREST else { return "502 REST not implemented" }
+            restartOffset = Int(argument) ?? 0
+            return "350 Restarting at \(restartOffset)"
         case "STOR":
             guard dataStream != nil else { return "425 Use PASV first" }
             if readOnlyPaths.contains(argument) { return "553 Permission denied" }
             storingPath = argument
+            storingOffset = restartOffset
+            restartOffset = 0
             return "150 Opening data connection"
         case "RETR":
             guard let dataStream else { return "425 Use PASV first" }

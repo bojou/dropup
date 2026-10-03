@@ -263,6 +263,67 @@ struct FTPSessionTests {
         await #expect(throws: CancellationError.self) { try await task.value }
         #expect(server.file("/drops/big.bin").map { $0.count < 2_000_000 } ?? true)
     }
+
+    // MARK: Carrying on a partly sent file
+
+    @Test func carriesOnWhereTheServerStoppedWithREST() async throws {
+        let temp = try TempFiles()
+        defer { temp.remove() }
+        let file = try temp.file(named: "big.bin", size: 600_000)
+        let original = try Data(contentsOf: file)
+        let server = FakeFTPServer()
+        server.seed("/drops/big.bin", data: original.prefix(300_000))
+        let reported = Locked<[Int64]>([])
+
+        let session = try await connect(server)
+        try await session.upload(fileURL: file, to: "/drops/big.bin", startingAt: 300_000) { sent in reported.mutate { $0.append(sent) } }
+
+        #expect(server.file("/drops/big.bin") == original)
+        // REST comes right before STOR, once the data connection is there.
+        #expect(Array(server.commandLog.suffix(3)) == ["EPSV", "REST 300000", "STOR /drops/big.bin"])
+        // The first number says the server holds the file, as 0 does for a new one.
+        #expect(reported.value.first == 300_000)
+        #expect(reported.value.last == 600_000)
+    }
+
+    @Test func wontCarryOnWhenTheServerHasNoREST() async throws {
+        let temp = try TempFiles()
+        defer { temp.remove() }
+        let file = try temp.file(named: "big.bin", size: 600_000)
+        let server = FakeFTPServer()
+        server.supportsREST = false
+        server.seed("/drops/big.bin", data: Data(repeating: 1, count: 300_000))
+        let reported = Locked<[Int64]>([])
+
+        let session = try await connect(server)
+        await #expect(throws: UploaderError.cannotResume) {
+            try await session.upload(fileURL: file, to: "/drops/big.bin", startingAt: 300_000) { sent in reported.mutate { $0.append(sent) } }
+        }
+
+        // Nothing was sent and the partial file was not touched.
+        #expect(!server.commandLog.contains { $0.hasPrefix("STOR") })
+        #expect(server.file("/drops/big.bin")?.count == 300_000)
+        #expect(reported.value.isEmpty)
+    }
+
+    @Test func saysHowBigAFileIsOrThatThereIsNone() async throws {
+        let server = FakeFTPServer()
+        server.seed("/drops/a.bin", data: Data(repeating: 1, count: 1234))
+        let session = try await connect(server)
+
+        #expect(try await session.fileSize(atPath: "/drops/a.bin") == 1234)
+        #expect(try await session.fileSize(atPath: "/drops/missing.bin") == nil)
+    }
+
+    @Test func withoutSIZEThereIsNoTellingHowMuchArrived() async throws {
+        let server = FakeFTPServer()
+        server.supportsSIZE = false
+        let session = try await connect(server)
+
+        await #expect(throws: UploaderError.cannotResume) {
+            _ = try await session.fileSize(atPath: "/drops/a.bin")
+        }
+    }
 }
 
 struct FTPListingTests {

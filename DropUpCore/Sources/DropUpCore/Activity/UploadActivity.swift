@@ -20,12 +20,14 @@ public struct UploadActivity: Equatable, Sendable {
         case uploading
         case succeeded(remotePath: String)
         case failed(message: String)
+        /// DropUp quit, or crashed, before this one was done. It was restored after a relaunch and waits to be resumed.
+        case interrupted
         case cancelled
 
         public var isFinished: Bool {
             switch self {
             case .waiting, .uploading: false
-            case .succeeded, .failed, .cancelled: true
+            case .succeeded, .failed, .interrupted, .cancelled: true
             }
         }
     }
@@ -37,6 +39,24 @@ public struct UploadActivity: Equatable, Sendable {
         public var bytesSent: Int64 = 0
         public var state: State = .waiting
         public var finishedAt: Date?
+        /// What it takes to carry the upload on after an interruption, once the upload has got far enough to have it.
+        public var resume: ResumePoint?
+        /// The connection is down and DropUp is trying again by itself.
+        public var isReconnecting = false
+        /// Something to say about this upload besides its progress, such as why it started over.
+        public var notice: String?
+
+        /// A stopped upload with part of it on the server, which can be carried on from there. It stays in the list
+        /// until it is resumed or removed. An upload that failed before anything was sent keeps its `resume` too, so it
+        /// can be sent again after a relaunch, but it is an ordinary failed row otherwise.
+        public var isResumable: Bool {
+            guard let resume else { return false }
+            switch state {
+            case .interrupted: return true
+            case .failed: return resume.hasProgress
+            default: return false
+            }
+        }
 
         public var fraction: Double {
             UploadProgress(bytesSent: bytesSent, totalBytes: totalBytes).fraction
@@ -139,6 +159,8 @@ public struct UploadActivity: Equatable, Sendable {
                 hasUnseenFailure = false
             }
             batchIDs.insert(id)
+            // An upload that is carried on comes back under the id its row had: it takes that row's place.
+            items.removeAll { $0.id == id }
             // Active items stay in drop order after the already-active ones; finished go below.
             let firstFinished = items.firstIndex { $0.state.isFinished } ?? items.endIndex
             items.insert(Item(id: id, fileName: fileName, totalBytes: totalBytes), at: firstFinished)
@@ -150,24 +172,48 @@ public struct UploadActivity: Equatable, Sendable {
             update(id) {
                 $0.bytesSent = progress.bytesSent
                 if progress.totalBytes > 0 { $0.totalBytes = progress.totalBytes }
+                $0.isReconnecting = false
             }
             recordSample(now)
+
+        case .resumable(let id, let point):
+            update(id) { $0.resume = point }
+
+        case .waitingForConnection(let id):
+            update(id) { $0.isReconnecting = true }
+
+        case .restarted(let id, let reason):
+            update(id) {
+                $0.notice = reason
+                $0.bytesSent = 0
+            }
 
         case .succeeded(let id, let remotePath):
             update(id) {
                 $0.bytesSent = $0.totalBytes
                 $0.state = .succeeded(remotePath: remotePath)
+                $0.resume = nil
+                $0.notice = nil
+                $0.isReconnecting = false
             }
             lastSucceededAt = now
             finish(id, now)
 
         case .failed(let id, let failure):
-            update(id) { $0.state = .failed(message: failure.displayMessage) }
+            update(id) {
+                $0.state = .failed(message: failure.displayMessage)
+                $0.isReconnecting = false
+            }
             hasUnseenFailure = true
             finish(id, now)
 
         case .cancelled(let id):
-            update(id) { $0.state = .cancelled }
+            update(id) {
+                $0.state = .cancelled
+                $0.resume = nil
+                $0.notice = nil
+                $0.isReconnecting = false
+            }
             finish(id, now)
         }
     }
@@ -178,9 +224,11 @@ public struct UploadActivity: Equatable, Sendable {
     }
 
     /// Whether `item` can be taken out of the list by itself: it is finished, and no batch is running. During a batch
-    /// the finished items are still being counted and summed up, so they stay until it is done.
+    /// the finished items are still being counted and summed up, so they stay until it is done. An interrupted upload
+    /// from before this batch is not counted in it, so it can go at any time.
     public func canDismiss(_ item: Item) -> Bool {
-        !isBusy && item.state.isFinished
+        guard item.state.isFinished else { return false }
+        return !isBusy || (item.isResumable && !batchIDs.contains(item.id))
     }
 
     /// Takes one finished upload out of the list. Does nothing for an upload that isn't finished or while a batch runs.
@@ -189,15 +237,18 @@ public struct UploadActivity: Equatable, Sendable {
         remove(id)
     }
 
+    /// Whether Clear would take anything out: interrupted uploads stay until they are resumed or removed one by one.
+    public var canClear: Bool { items.contains { $0.state.isFinished && !$0.isResumable } }
+
     public mutating func remove(_ id: UUID) {
         items.removeAll { $0.id == id }
         batchIDs.remove(id)
     }
 
-    /// Removes finished items. With `failuresToo` false, failed ones stay so they can be retried.
+    /// Removes finished items, except the interrupted ones. With `failuresToo` false, failed ones stay so they can be retried.
     public mutating func clearFinished(failuresToo: Bool = true) {
         items.removeAll { item in
-            guard item.state.isFinished else { return false }
+            guard item.state.isFinished, !item.isResumable else { return false }
             if case .failed = item.state, !failuresToo { return false }
             return true
         }
@@ -206,11 +257,11 @@ public struct UploadActivity: Equatable, Sendable {
         }
     }
 
-    /// Keeps only the newest `limit` finished items.
+    /// Keeps only the newest `limit` finished items. Interrupted ones are not counted and not removed.
     public mutating func trim(toRecent limit: Int) {
         var kept = 0
         items.removeAll { item in
-            guard item.state.isFinished else { return false }
+            guard item.state.isFinished, !item.isResumable else { return false }
             kept += 1
             return kept > max(limit, 0)
         }

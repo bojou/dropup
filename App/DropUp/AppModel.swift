@@ -23,6 +23,10 @@ final class AppModel {
     private(set) var preferences: Preferences
     /// Bumped when a stored host key changes, so views showing it refresh.
     private(set) var hostKeyRevision = 0
+    /// Interrupted uploads whose half-sent file is being taken off the server, because the user removed them.
+    private(set) var removing: Set<UUID> = []
+    /// Why an interrupted upload could not be removed: its half-sent file is still on the server, so its row stays.
+    private(set) var removalProblems: [UUID: String] = [:]
 
     var panelState: DropPanelState = .hidden
     /// A file is being dragged over the menubar icon itself.
@@ -54,6 +58,8 @@ final class AppModel {
     @ObservationIgnored private var ticker: Task<Void, Never>?
     /// Sleeps until the next finished upload is due to leave the Recent list.
     @ObservationIgnored private var expiry: Task<Void, Never>?
+    /// Saves the Recent list a moment from now, once for any number of changes in between.
+    @ObservationIgnored private var pendingSave: Task<Void, Never>?
 
     init(
         settings: any SettingsStore = UserDefaultsSettingsStore(),
@@ -73,12 +79,15 @@ final class AppModel {
         self.queue = UploadQueue(settings: settings, credentials: credentials, connectors: connectors)
         self.config = settings.loadServerConfig()
         self.preferences = settings.loadPreferences()
-        if preferences.recentSurvivesQuit {
-            activity.restore(recentStore.load())
-            pruneRecent()
-        } else {
-            recentStore.save([])
+        // What the settings keep: finished uploads only when the list survives a quit, and interrupted ones for as long
+        // as the list is on at all. They are what is left of a transfer, and the way to carry it on.
+        let keepsInterrupted = preferences.recentLimit > 0
+        let keepsFinished = preferences.recentSurvivesQuit
+        activity.restore(recentStore.load().filter { $0.isInterrupted ? keepsInterrupted : keepsFinished })
+        for item in activity.items {
+            if let point = item.resume { uploadFolders[item.id] = point.directory ?? point.config?.remoteDirectory }
         }
+        pruneRecent()
 
         Task { @MainActor [weak self, events = queue.events] in
             for await event in events {
@@ -141,14 +150,33 @@ final class AppModel {
         Task { await queue.cancelAll() }
     }
 
-    /// Whether a failed upload can be sent again. One restored after relaunching can't: the file's location is gone.
+    /// Whether a failed or interrupted upload can be sent again: while DropUp runs it knows where the file is, and
+    /// one that was kept across a quit has that written down with it.
     func canRetry(_ id: UUID) -> Bool {
-        sourceURLs[id] != nil
+        guard !removing.contains(id) else { return false }
+        return sourceURLs[id] != nil || row(id)?.resume != nil
+    }
+
+    /// `Resume` for an upload that has part of its file on the server, `Retry` for one that starts from the beginning.
+    func retryTitle(_ id: UUID) -> String {
+        guard let item = row(id) else { return "Retry" }
+        if item.state == .interrupted { return "Resume" }
+        return item.resume?.hasProgress == true ? "Resume" : "Retry"
     }
 
     func retry(_ id: UUID) {
-        guard let url = sourceURLs[id] else { return }
-        let directory = destinations[id]
+        guard canRetry(id) else { return }
+        removalProblems[id] = nil
+        if let point = row(id)?.resume, point.hasProgress {
+            // Part of it is on the server: carry on from there, as the same row.
+            sourceURLs[id] = point.sourceURL
+            destinations[id] = point.directory
+            uploadFolders[id] = point.directory ?? point.config?.remoteDirectory
+            Task { await queue.resume(id, from: point) }
+            return
+        }
+        guard let url = sourceURLs[id] ?? row(id)?.resume?.sourceURL else { return }
+        let directory = destinations[id] ?? row(id)?.resume?.directory
         activity.remove(id)
         sourceURLs[id] = nil
         destinations[id] = nil
@@ -157,12 +185,42 @@ final class AppModel {
         upload([url], toDirectory: directory)
     }
 
-    /// Takes one finished upload out of the Recent list.
-    func dismiss(_ id: UUID) {
-        activity.dismiss(id)
+    /// Takes one finished upload out of the Recent list. An interrupted one is cancelled by this: the half-sent file
+    /// goes off the server first, and if that can't be done the row stays, with the reason, so nothing is left behind
+    /// unseen. `force` drops the row anyway.
+    func dismiss(_ id: UUID, force: Bool = false) {
+        if !force, let item = row(id), item.isResumable {
+            if activity.canDismiss(item), let point = item.resume { removeInterrupted(id, point: point) }
+            return
+        }
+        removalProblems[id] = nil
+        if force, row(id)?.state.isFinished == true { activity.remove(id) } else { activity.dismiss(id) }
         forgetUnusedSources()
         persistRecent()
         scheduleRecentExpiry()
+    }
+
+    private func row(_ id: UUID) -> UploadActivity.Item? {
+        activity.items.first { $0.id == id }
+    }
+
+    private func removeInterrupted(_ id: UUID, point: ResumePoint) {
+        guard !removing.contains(id) else { return }
+        removing.insert(id)
+        removalProblems[id] = nil
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            let problem = await queue.discard(point)
+            removing.remove(id)
+            if let problem {
+                removalProblems[id] = problem
+            } else {
+                activity.remove(id)
+                forgetUnusedSources()
+                persistRecent()
+                scheduleRecentExpiry()
+            }
+        }
     }
 
     func clearFinished() {
@@ -253,6 +311,10 @@ final class AppModel {
         case .succeeded, .failed, .cancelled:
             forgetUnusedSources()
             refreshClock(after: 2.1)
+        case .resumable:
+            // What it takes to carry the upload on is kept as it changes, so a crash leaves something to resume from.
+            // A folder reports after every file, and a big drop reports for every file in it: saved together, a moment later.
+            persistRecentSoon()
         default:
             break
         }
@@ -281,12 +343,33 @@ final class AppModel {
     private func pruneRecent() {
         activity.applyRecentPolicy(preferences.recentPolicy, now: Date())
         forgetUnusedSources()
-        persistRecent()
+        // While uploads run, every one that finishes comes through here: a big drop is saved in one go, not once per file.
+        if activity.isBusy { persistRecentSoon() } else { persistRecent() }
         scheduleRecentExpiry()
     }
 
     private func persistRecent() {
-        recentStore.save(preferences.recentSurvivesQuit ? activity.storedFinished : [])
+        pendingSave?.cancel()
+        pendingSave = nil
+        var kept: [StoredUpload] = []
+        if preferences.recentSurvivesQuit { kept += activity.storedFinished }
+        // With the list off there is nothing to resume from, so nothing is kept for it.
+        if preferences.recentLimit > 0 { kept += activity.storedInterrupted() }
+        recentStore.save(kept)
+    }
+
+    private func persistRecentSoon() {
+        guard pendingSave == nil else { return }
+        pendingSave = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 500_000_000)
+            guard !Task.isCancelled else { return }
+            self?.persistRecent()
+        }
+    }
+
+    /// Writes the Recent list down now, for when DropUp is about to quit.
+    func flushRecent() {
+        persistRecent()
     }
 
     private func scheduleRecentExpiry() {
@@ -342,6 +425,7 @@ final class AppModel {
         sourceURLs = sourceURLs.filter { live.contains($0.key) }
         destinations = destinations.filter { live.contains($0.key) }
         uploadFolders = uploadFolders.filter { live.contains($0.key) }
+        removalProblems = removalProblems.filter { live.contains($0.key) }
     }
 
     private func startTicker() {

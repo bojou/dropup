@@ -35,6 +35,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         windows.showSettings()
     }
 
+    // Uploads still running when DropUp quits are kept, so they can be resumed: write down where they got to.
+    func applicationWillTerminate(_ notification: Notification) {
+        model.flushRecent()
+    }
+
     // The menubar icon keeps the app alive when the last window closes.
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
 

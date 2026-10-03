@@ -43,6 +43,8 @@ public struct RecentPolicy: Equatable, Sendable {
 public struct StoredUpload: Codable, Equatable, Sendable {
     public enum Outcome: String, Codable, Sendable {
         case succeeded, failed, cancelled
+        /// Not done when DropUp quit: it was running or waiting, or an earlier launch had already restored it so.
+        case interrupted
     }
 
     public var fileName: String
@@ -51,13 +53,22 @@ public struct StoredUpload: Codable, Equatable, Sendable {
     /// The remote path of an upload that went through, or the message of one that failed.
     public var detail: String
     public var finishedAt: Date
+    /// What it takes to carry the upload on, for one that was interrupted. Finished uploads have none.
+    public var resume: ResumePoint?
 
-    public init(fileName: String, totalBytes: Int64, outcome: Outcome, detail: String, finishedAt: Date) {
+    public init(fileName: String, totalBytes: Int64, outcome: Outcome, detail: String, finishedAt: Date, resume: ResumePoint? = nil) {
         self.fileName = fileName
         self.totalBytes = totalBytes
         self.outcome = outcome
         self.detail = detail
         self.finishedAt = finishedAt
+        self.resume = resume
+    }
+
+    /// Whether this is an upload to carry on rather than one that is over: it stopped with part of it on the server.
+    public var isInterrupted: Bool {
+        guard let resume else { return false }
+        return outcome == .interrupted || (outcome == .failed && resume.hasProgress)
     }
 }
 
@@ -104,9 +115,11 @@ extension UploadActivity {
             }
         }
         if policy.limit > 0 {
+            // Interrupted uploads are exempt from the count and the clock: they stay until resumed or removed.
             trim(toRecent: policy.limit)
         } else {
-            removeFinished { _ in true }
+            // Keeping nothing means nothing, an interrupted upload included: with no list there is nothing to resume from.
+            items.removeAll { $0.state.isFinished }
         }
         // The icon's failure mark is not touched here: it belongs to the upload that failed, not to the list.
     }
@@ -114,21 +127,41 @@ extension UploadActivity {
     /// When the next finished upload is due to be removed under `lifetime`, or nil if none ever will be.
     public func nextRecentExpiry(lifetime: TimeInterval?) -> Date? {
         guard let lifetime else { return nil }
-        return items.compactMap { $0.state.isFinished ? $0.finishedAt?.addingTimeInterval(lifetime) : nil }.min()
+        return items.compactMap { $0.state.isFinished && !$0.isResumable ? $0.finishedAt?.addingTimeInterval(lifetime) : nil }.min()
     }
 
-    /// The finished uploads, newest first, in the form that is kept between launches.
+    /// The finished uploads, newest first, in the form that is kept between launches. Interrupted ones are not among them:
+    /// `storedInterrupted` has those.
     public var storedFinished: [StoredUpload] {
         items.compactMap { item in
-            guard let finishedAt = item.finishedAt else { return nil }
+            guard let finishedAt = item.finishedAt, !item.isResumable else { return nil }
             switch item.state {
             case .succeeded(let remotePath):
                 return StoredUpload(fileName: item.fileName, totalBytes: item.totalBytes, outcome: .succeeded, detail: remotePath, finishedAt: finishedAt)
             case .failed(let message):
-                return StoredUpload(fileName: item.fileName, totalBytes: item.totalBytes, outcome: .failed, detail: message, finishedAt: finishedAt)
+                // Kept with what it takes to send it again, so a relaunch doesn't take the retry away.
+                return StoredUpload(fileName: item.fileName, totalBytes: item.totalBytes, outcome: .failed, detail: message, finishedAt: finishedAt, resume: item.resume)
             case .cancelled:
                 return StoredUpload(fileName: item.fileName, totalBytes: item.totalBytes, outcome: .cancelled, detail: "", finishedAt: finishedAt)
-            case .waiting, .uploading:
+            case .waiting, .uploading, .interrupted:
+                return nil
+            }
+        }
+    }
+
+    /// The uploads that can be carried on, in the form that is kept between launches: the ones that stopped with part of
+    /// them on the server, and the ones still running or waiting, which are interrupted if DropUp quits now.
+    /// Running and waiting ones only count once they have what it takes to carry on (`Item.resume`).
+    public func storedInterrupted(now: Date = Date()) -> [StoredUpload] {
+        items.compactMap { item in
+            guard let resume = item.resume else { return nil }
+            switch item.state {
+            case .waiting, .uploading, .interrupted:
+                return StoredUpload(fileName: item.fileName, totalBytes: item.totalBytes, outcome: .interrupted, detail: "", finishedAt: item.finishedAt ?? now, resume: resume)
+            case .failed(let message):
+                guard item.isResumable else { return nil }
+                return StoredUpload(fileName: item.fileName, totalBytes: item.totalBytes, outcome: .failed, detail: message, finishedAt: item.finishedAt ?? now, resume: resume)
+            case .succeeded, .cancelled:
                 return nil
             }
         }
@@ -146,14 +179,20 @@ extension UploadActivity {
                 item.state = .succeeded(remotePath: stored.detail)
             case .failed:
                 item.state = .failed(message: stored.detail)
+                item.resume = stored.resume
             case .cancelled:
                 item.state = .cancelled
+            case .interrupted:
+                // Without what it takes to carry on there is nothing to offer, so it is not listed at all.
+                guard stored.resume != nil else { continue }
+                item.state = .interrupted
+                item.resume = stored.resume
             }
             items.append(item)
         }
     }
 
     private mutating func removeFinished(where shouldRemove: (Item) -> Bool) {
-        items.removeAll { $0.state.isFinished && shouldRemove($0) }
+        items.removeAll { $0.state.isFinished && !$0.isResumable && shouldRemove($0) }
     }
 }

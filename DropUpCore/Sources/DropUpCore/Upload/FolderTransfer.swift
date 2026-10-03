@@ -33,6 +33,25 @@ public struct LocalTree: Sendable, Equatable {
 
     public var totalBytes: Int64 { files.reduce(0) { $0 + $1.size } }
 
+    /// A stamp of the names and sizes of the files, in the order they are sent. An interrupted folder upload carries
+    /// on only if the folder still has the same files, because it counts the files it has done in that order.
+    public var fingerprint: String {
+        var hash: UInt64 = 0xcbf2_9ce4_8422_2325 // FNV-1a: not a secret, only a way to notice that something changed
+        func mix(_ bytes: some Sequence<UInt8>) {
+            for byte in bytes {
+                hash ^= UInt64(byte)
+                hash = hash &* 0x100_0000_01b3
+            }
+        }
+        for file in files {
+            mix(file.relativePath.utf8)
+            mix([0])
+            mix(String(file.size).utf8)
+            mix([10])
+        }
+        return String(hash, radix: 16)
+    }
+
     /// The folders a file sits in, outermost first: `a/b/c.txt` is in `a` and `a/b`.
     static func folders(containing relativePath: String) -> [String] {
         let names = relativePath.split(separator: "/")
