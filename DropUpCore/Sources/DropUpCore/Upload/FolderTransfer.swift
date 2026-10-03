@@ -33,6 +33,19 @@ public struct LocalTree: Sendable, Equatable {
 
     public var totalBytes: Int64 { files.reduce(0) { $0 + $1.size } }
 
+    /// The folders a file sits in, outermost first: `a/b/c.txt` is in `a` and `a/b`.
+    static func folders(containing relativePath: String) -> [String] {
+        let names = relativePath.split(separator: "/")
+        guard names.count > 1 else { return [] }
+        var folders: [String] = []
+        var path = ""
+        for name in names.dropLast() {
+            path = path.isEmpty ? String(name) : path + "/" + name
+            folders.append(path)
+        }
+        return folders
+    }
+
     private static let deepest = 64
     private static let mostItems = 500_000
 
@@ -44,6 +57,8 @@ public struct LocalTree: Sendable, Equatable {
 
     private static func scan(_ folder: URL, relative: String, depth: Int, into tree: inout LocalTree, fileManager: FileManager) throws {
         guard depth < deepest else { throw FileOperationError.tooDeep }
+        // A big folder takes a while to read: a cancel has to be able to stop it between folders.
+        try Task.checkCancellation()
         let keys: [URLResourceKey] = [.isDirectoryKey, .isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey]
         let children = try fileManager.contentsOfDirectory(at: folder, includingPropertiesForKeys: keys, options: [])
         for child in children.sorted(by: { $0.lastPathComponent < $1.lastPathComponent }) {

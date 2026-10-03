@@ -38,6 +38,8 @@ public enum UploadEvent: Sendable, Equatable {
 /// A folder is one item in the queue: it is sent with everything inside it, as the same name on the server (numbered
 /// when that name is taken, unless the setting is to replace). Its name in the events ends with `/`.
 /// Symbolic links inside it are left out. A folder that is cancelled or fails halfway keeps the files already sent.
+/// A folder is read (to learn what is in it and how big it is) on its own, off the queue, so a big one never holds up
+/// a cancel or the files behind it. Its subfolders are made on the server as the files going into them come up.
 ///
 /// The queue reads settings and credentials at the moment each upload starts,
 /// so edits made in Settings apply to the next file without restarting anything.
@@ -58,6 +60,8 @@ public actor UploadQueue {
         let fileURL: URL
         /// Where to put the file instead of the saved upload folder.
         let remoteDirectory: String?
+        /// For a folder: reading what is inside it, started when it was dropped and running while it waits its turn.
+        let scan: Task<LocalTree, any Error>?
     }
 
     private struct OpenSession {
@@ -99,27 +103,42 @@ public actor UploadQueue {
     /// - Parameter remoteDirectory: a folder on the same server to upload into instead of the saved upload folder.
     @discardableResult
     public func enqueue(_ fileURLs: [URL], toDirectory remoteDirectory: String? = nil) -> [UUID] {
-        let jobs = fileURLs.map { Job(id: UUID(), fileURL: $0, remoteDirectory: remoteDirectory) }
-        for job in jobs {
-            pending.append(job)
-            let name = job.fileURL.lastPathComponent
-            if isFolder(job.fileURL) {
-                let total = (try? LocalTree.scan(job.fileURL, fileManager: fileManager).totalBytes) ?? 0
-                continuation.yield(.queued(id: job.id, fileName: name + "/", totalBytes: total))
+        var ids: [UUID] = []
+        for url in fileURLs {
+            let id = UUID()
+            ids.append(id)
+            let name = url.lastPathComponent
+            var scan: Task<LocalTree, any Error>?
+            if isFolder(url) {
+                // The row shows up at once. Its size follows when the folder has been read, which can take a while.
+                continuation.yield(.queued(id: id, fileName: name + "/", totalBytes: 0))
+                scan = Self.readFolder(url, id: id, continuation: continuation)
             } else {
-                continuation.yield(.queued(id: job.id, fileName: name, totalBytes: size(of: job.fileURL)))
+                continuation.yield(.queued(id: id, fileName: name, totalBytes: size(of: url)))
             }
+            pending.append(Job(id: id, fileURL: url, remoteDirectory: remoteDirectory, scan: scan))
         }
         if worker == nil, !pending.isEmpty {
             worker = Task { await self.drain() }
         }
-        return jobs.map(\.id)
+        return ids
+    }
+
+    /// Reads a folder away from the queue, and reports its size once it is known.
+    private static func readFolder(_ url: URL, id: UUID, continuation: AsyncStream<UploadEvent>.Continuation) -> Task<LocalTree, any Error> {
+        Task.detached(priority: .userInitiated) {
+            let tree = try LocalTree.scan(url)
+            if !Task.isCancelled {
+                continuation.yield(.progress(id: id, UploadProgress(bytesSent: 0, totalBytes: tree.totalBytes)))
+            }
+            return tree
+        }
     }
 
     /// Cancels a waiting or running upload. Does nothing for finished or unknown ids.
     public func cancel(_ id: UUID) {
         if let index = pending.firstIndex(where: { $0.id == id }) {
-            pending.remove(at: index)
+            pending.remove(at: index).scan?.cancel()
             continuation.yield(.cancelled(id: id))
         } else if let active, active.id == id {
             cancelledIDs.insert(id)
@@ -131,6 +150,7 @@ public actor UploadQueue {
         let waiting = pending
         pending.removeAll()
         for job in waiting {
+            job.scan?.cancel()
             continuation.yield(.cancelled(id: job.id))
         }
         if let active { cancel(active.id) }
@@ -166,6 +186,8 @@ public actor UploadQueue {
         active = (job.id, task)
         let result = await task.result
         active = nil
+        // Nothing is left to read for this job, whatever way it ended (a no-op once the reading is done).
+        job.scan?.cancel()
 
         if cancelledIDs.remove(job.id) != nil {
             // The session is mid-transfer and in an unknown state.
@@ -237,9 +259,13 @@ public actor UploadQueue {
     ) async throws -> String {
         let tree: LocalTree
         do {
-            tree = try LocalTree.scan(job.fileURL, fileManager: fileManager)
+            // Normally finished long ago, since reading started when the folder was dropped. A cancel stops the reading too.
+            let scan = job.scan ?? Self.readFolder(job.fileURL, id: job.id, continuation: continuation)
+            tree = try await withTaskCancellationHandler { try await scan.value } onCancel: { scan.cancel() }
         } catch let error as FileOperationError {
             throw error
+        } catch is CancellationError {
+            throw CancellationError()
         } catch {
             throw UploadFailure.unsupportedItem
         }
@@ -257,9 +283,10 @@ public actor UploadQueue {
         }
         let root = Self.join(parent, finalName)
         try await Self.ensureFolder(root, session: session)
-        for folder in tree.directories {
-            try await Self.wrapped(folder) { try await Self.ensureFolder(Self.join(root, folder), session: session) }
-        }
+
+        // Folders are made as the files going into them come up, not all in front: a folder with thousands of
+        // subfolders starts sending, and can be cancelled, right away. Each one is made once, outermost first.
+        var made: Set<String> = []
 
         let total = tree.totalBytes
         let throttle = ProgressThrottle(interval: progressInterval, total: total)
@@ -268,6 +295,9 @@ public actor UploadQueue {
         var sentBefore: Int64 = 0
         for file in tree.files {
             try Task.checkCancellation()
+            for folder in LocalTree.folders(containing: file.relativePath) {
+                try await Self.make(folder, under: root, made: &made, session: session)
+            }
             let remotePath = Self.join(root, file.relativePath)
             written.willUpload(to: remotePath, on: config, password: password)
             let base = sentBefore
@@ -282,7 +312,19 @@ public actor UploadQueue {
             }
             sentBefore += file.size
         }
+        // Folders with no files in them (and nothing but such folders inside) are still part of the folder.
+        for folder in tree.directories {
+            try await Self.make(folder, under: root, made: &made, session: session)
+        }
         return root
+    }
+
+    /// Makes a folder inside the uploaded one, unless that has been done already.
+    private static func make(_ folder: String, under root: String, made: inout Set<String>, session: any ServerSession) async throws {
+        guard made.insert(folder).inserted else { return }
+        // A real server answers each command in turn, however many are waiting: look for a cancel before every one.
+        try Task.checkCancellation()
+        try await wrapped(folder) { try await ensureFolder(join(root, folder), session: session) }
     }
 
     private static func join(_ folder: String, _ name: String) -> String {

@@ -25,6 +25,8 @@ final class FakeSession: ServerSession, @unchecked Sendable {
     private let hangOnDelete: Bool
     private let listDelayMilliseconds: UInt64
     private let uploadDelayMilliseconds: UInt64
+    private let makeDirectoryDelayMilliseconds: UInt64
+    private var _madeDirectories: [String] = []
     let folders: [String: [String]]
     let entries: [String: [RemoteEntry]]
 
@@ -40,6 +42,7 @@ final class FakeSession: ServerSession, @unchecked Sendable {
     ///   - hangOnDelete: makes `deleteFile` wait until it is cancelled.
     ///   - listDelayMilliseconds: how long each `listEntries` call takes.
     ///   - uploadDelayMilliseconds: how long each upload takes once the file exists.
+    ///   - makeDirectoryDelayMilliseconds: how long each `makeDirectory` takes. It does not notice a cancel, like a real server's reply.
     init(
         existing: Set<String> = [],
         folders: [String: [String]] = [:],
@@ -54,7 +57,8 @@ final class FakeSession: ServerSession, @unchecked Sendable {
         deleteError: (any Error)? = nil,
         hangOnDelete: Bool = false,
         listDelayMilliseconds: UInt64 = 2,
-        uploadDelayMilliseconds: UInt64 = 0
+        uploadDelayMilliseconds: UInt64 = 0,
+        makeDirectoryDelayMilliseconds: UInt64 = 0
     ) {
         _existing = existing
         self.folders = folders
@@ -70,6 +74,7 @@ final class FakeSession: ServerSession, @unchecked Sendable {
         self.hangOnDelete = hangOnDelete
         self.listDelayMilliseconds = listDelayMilliseconds
         self.uploadDelayMilliseconds = uploadDelayMilliseconds
+        self.makeDirectoryDelayMilliseconds = makeDirectoryDelayMilliseconds
     }
 
     /// Remote paths in the order uploads started.
@@ -80,6 +85,8 @@ final class FakeSession: ServerSession, @unchecked Sendable {
     /// Remote paths in the order downloads started.
     var downloads: [String] { lock.withLock { _downloads } }
     var listingCount: Int { lock.withLock { _listings } }
+    /// Remote paths in the order folders were made.
+    var madeDirectories: [String] { lock.withLock { _madeDirectories } }
 
     /// Makes the next `listEntries` call fail with `error`.
     func failNextListing(with error: any Error) {
@@ -149,7 +156,17 @@ final class FakeSession: ServerSession, @unchecked Sendable {
         }
     }
 
-    func makeDirectory(atPath path: String) async throws {}
+    func makeDirectory(atPath path: String) async throws {
+        lock.withLock { _madeDirectories.append(path) }
+        if makeDirectoryDelayMilliseconds > 0 {
+            // Waits the whole time even when cancelled.
+            await withCheckedContinuation { continuation in
+                DispatchQueue.global().asyncAfter(deadline: .now() + .milliseconds(Int(makeDirectoryDelayMilliseconds))) {
+                    continuation.resume()
+                }
+            }
+        }
+    }
     func removeDirectory(atPath path: String) async throws {}
     func rename(from oldPath: String, to newPath: String) async throws {}
 
