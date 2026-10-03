@@ -50,6 +50,14 @@ struct LocalTreeTests {
     }
 }
 
+struct FolderPathTests {
+    @Test func listsTheFoldersAFileSitsInOutermostFirst() {
+        #expect(LocalTree.folders(containing: "c.txt").isEmpty)
+        #expect(LocalTree.folders(containing: "a/c.txt") == ["a"])
+        #expect(LocalTree.folders(containing: "a/b/c.txt") == ["a", "a/b"])
+    }
+}
+
 struct FolderUploadTests {
     let config = ServerConfig(transferProtocol: .sftp, host: "example.com", username: "me", remoteDirectory: "/drops")
 
@@ -82,7 +90,9 @@ struct FolderUploadTests {
         let (ids, events) = await run(makeQueue(server), [root])
 
         let id = try #require(ids.first)
-        #expect(events.first == .queued(id: id, fileName: "photos/", totalBytes: 9))
+        // The row shows up at once; its size follows as soon as the folder has been read.
+        #expect(events.first == .queued(id: id, fileName: "photos/", totalBytes: 0))
+        #expect(events.contains(.progress(id: id, UploadProgress(bytesSent: 0, totalBytes: 9))))
         #expect(events.last == .succeeded(id: id, remotePath: "/drops/photos"))
         #expect(!events.contains { if case .failed = $0 { true } else { false } })
         #expect(server.paths(under: "/drops") == [
@@ -194,6 +204,52 @@ struct FolderUploadTests {
 
         #expect(events.last == .succeeded(id: try #require(ids.first), remotePath: "/drops/nothing"))
         #expect(server.exists("/drops/nothing"))
+    }
+
+    @Test func aFolderStartsSendingBeforeEverySubfolderIsMade() async throws {
+        let temp = try TempFiles()
+        defer { temp.remove() }
+        let root = try buildFolder(named: "photos", in: temp, ["a/1.txt": "1", "b/2.txt": "2", "c/3.txt": "3", "d/": ""])
+        let server = FakeFileSystem().addFolder("/drops")
+
+        let (ids, events) = await run(makeQueue(server), [root])
+
+        #expect(events.last == .succeeded(id: try #require(ids.first), remotePath: "/drops/photos"))
+        let log = server.log
+        let firstFile = try #require(log.firstIndex { $0.hasPrefix("STOR ") })
+        let lastFolder = try #require(log.lastIndex { $0.hasPrefix("MKD ") })
+        #expect(firstFile < lastFolder)
+        // Each folder is still made once, before the file that goes into it, and the empty one is not forgotten.
+        #expect(log.filter { $0.hasPrefix("MKD ") }.count == 5)
+        #expect(try #require(log.firstIndex(of: "MKD /drops/photos/c")) < #require(log.firstIndex(of: "STOR /drops/photos/c/3.txt")))
+        #expect(server.exists("/drops/photos/d"))
+    }
+
+    @Test func cancellingStopsMakingFoldersAtOnce() async throws {
+        let temp = try TempFiles()
+        defer { temp.remove() }
+        let items = Dictionary(uniqueKeysWithValues: (0..<300).map { ("d\($0)/", "") })
+        let root = try buildFolder(named: "many", in: temp, items)
+        // A server that is slow to answer, and answers even a command whose caller has given up.
+        let session = FakeSession(makeDirectoryDelayMilliseconds: 5)
+        let queue = UploadQueue(
+            settings: InMemorySettingsStore(config: config),
+            credentials: InMemoryCredentialStore(passwords: [config.credentialKey: "secret"]),
+            connectors: FakeConnector(session: session),
+            progressInterval: 0
+        )
+
+        let ids = await queue.enqueue([root])
+        try await eventually { session.madeDirectories.count >= 5 }
+        await queue.cancel(ids[0])
+        await queue.waitUntilIdle()
+        await queue.finish()
+        var events: [UploadEvent] = []
+        for await event in queue.events { events.append(event) }
+
+        #expect(events.last == .cancelled(id: ids[0]))
+        // The one in flight finishes; none after it is started.
+        #expect(session.madeDirectories.count < 50)
     }
 
     @Test func aFolderAndAFileDroppedTogetherBothGo() async throws {

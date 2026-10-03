@@ -361,10 +361,13 @@ private struct UploadRow: View {
 
     private var meta: String {
         let total = Format.bytes(item.totalBytes)
+        // A folder's size is not known until it has been read, which takes a while for a big one.
+        let sizeKnown = !item.isFolder || item.totalBytes > 0
         switch item.state {
         case .waiting:
-            return "\(total) · Waiting"
+            return sizeKnown ? "\(total) · Waiting" : "Waiting"
         case .uploading:
+            guard sizeKnown else { return "Reading the folder…" }
             let progress = "\(Format.bytes(item.bytesSent)) of \(total)"
             if let left = ActivityText.timeLeft(activity.secondsRemaining(now: now)), activity.running.first?.id == item.id {
                 return "\(progress) · \(left)"
