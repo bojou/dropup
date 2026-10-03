@@ -16,6 +16,8 @@ are built, and the secrets the maintainer adds to make them notarized, is in [do
 
 To have DropUp start when you log in, turn on **Open at login** in Settings → General.
 
+DropUp updates itself: once a day it looks for a newer release and asks before installing it. **Settings → General → Updates** has **Check Now**, and a switch to stop the daily check. An update waits for running uploads and downloads to finish before DropUp restarts. Setting this up for releases is described in [docs/RELEASING.md](docs/RELEASING.md).
+
 ## Using it
 
 - Drag a file or a whole folder toward the menubar icon. A drop panel opens under it; drop it there (or straight on the icon). A folder goes up with everything inside it and shows as one item in the list. Links and `.DS_Store` files inside it are left out.
@@ -78,6 +80,7 @@ DropUpCore/          Swift package
   Tests/                   Unit tests (fakes) and integration tests (real servers)
 App/DropUp/          The menubar app (SwiftUI + AppKit glue; project.yml generates the Xcode project)
 scripts/test-servers.py  Throwaway FTP and SFTP servers for the integration tests
+scripts/sparkle-sign.sh, make-appcast.py  Sign a release for updates and write its appcast
 docs/ARCHITECTURE.md How the pieces fit and why
 docs/RELEASING.md    Building signed, notarized releases
 ```

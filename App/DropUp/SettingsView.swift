@@ -268,8 +268,16 @@ private struct GeneralSettings: View {
                 }
             }
             recentSection
-            Section {
-                LabeledContent("Version", value: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "")
+            Section("Updates") {
+                Toggle("Automatically check for updates", isOn: Binding(
+                    get: { model.updates.automaticallyChecks },
+                    set: { model.updates.setAutomaticallyChecks($0) }
+                ))
+                .disabled(!Updates.isConfigured)
+                LabeledContent("Version \(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "")") {
+                    Button("Check Now") { model.updates.checkNow() }
+                        .disabled(!model.updates.canCheckNow)
+                }
             }
         }
         .formStyle(.grouped)

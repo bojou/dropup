@@ -6,6 +6,10 @@ options:
 packages:
   DropUpCore:
     path: DropUpCore
+  Sparkle:
+    url: https://github.com/sparkle-project/Sparkle
+    # Exact, so the framework inside the app and the signing tools that come with it stay the same version.
+    exactVersion: 2.10.0
 targets:
   DropUp:
     type: application
@@ -17,6 +21,7 @@ targets:
         product: DropUpCore
       - package: DropUpCore
         product: DropUpTransport
+      - package: Sparkle # Xcode puts Sparkle.framework into the app by itself; `embed: true` breaks the build
     info:
       path: App/DropUp/Info.plist
       properties:
@@ -26,6 +31,13 @@ targets:
         LSUIElement: true # starts menubar-only; WindowCoordinator adds a Dock icon while a window is open
         LSApplicationCategoryType: public.app-category.utilities
         NSHumanReadableCopyright: ""
+        # Updates (Sparkle). The feed is the appcast attached to the latest release; the release workflow builds and
+        # signs it. SUPublicEDKey is the public half of the key whose private half is the SPARKLE_PRIVATE_KEY secret.
+        SUFeedURL: https://github.com/bojou/dropup/releases/latest/download/appcast.xml
+        SUPublicEDKey: PYQ9M69VotH49iJ8G2gsz8azXY6HbL18JcJZqvDJRCM=
+        SUEnableAutomaticChecks: true # on until the user turns it off in Settings, without Sparkle's own permission prompt
+        SUAllowsAutomaticUpdates: false # the user always decides when to install
+        SUScheduledCheckInterval: 86400
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: app.dropup.DropUp

@@ -42,6 +42,8 @@ final class AppModel {
     /// Fetches items dragged out of the Browse window once they are dropped on the Mac.
     @ObservationIgnored let dragExport: DragExport
     @ObservationIgnored private let queue: UploadQueue
+    /// Looks for new versions of DropUp.
+    @ObservationIgnored let updates = Updates()
     @ObservationIgnored private var sourceURLs: [UUID: URL] = [:]
     /// Files dropped into the Browse window go to the folder it showed; a retry sends them there again.
     @ObservationIgnored private var destinations: [UUID: String] = [:]
@@ -85,6 +87,11 @@ final class AppModel {
         }
         downloads.onRunFinished = { [weak self] done, failed in
             self?.downloadsFinished(done: done, failed: failed)
+            self?.updates.transfersMayHaveEnded()
+        }
+        updates.watchTransfers { [weak self] in
+            guard let self else { return false }
+            return activity.isBusy || downloads.isBusy
         }
     }
 
@@ -257,7 +264,10 @@ final class AppModel {
         }
         if isPopoverShown { activity.markFailuresSeen() }
         if activity.isBusy { startTicker() } else { stopTicker() }
-        if wasBusy, !activity.isBusy { batchFinished() }
+        if wasBusy, !activity.isBusy {
+            batchFinished()
+            updates.transfersMayHaveEnded()
+        }
         // After the notice, which is worded from the batch's own items: the rules may remove them.
         switch event {
         case .succeeded, .failed, .cancelled: pruneRecent()
