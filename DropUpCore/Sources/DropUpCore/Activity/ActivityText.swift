@@ -19,14 +19,15 @@ public enum ActivityText {
         return "Uploading \(min(activity.batchDone + 1, total)) of \(total)"
     }
 
-    /// `2 uploaded · 1 failed · 1 interrupted` for the finished section header.
+    /// `2 uploaded · 1 failed · 1 interrupted · 1 paused` for the finished section header.
     public static func finishedSummary(_ activity: UploadActivity) -> String {
-        var uploaded = 0, failed = 0, interrupted = 0
+        var uploaded = 0, failed = 0, interrupted = 0, paused = 0
         for item in activity.finished {
             switch item.state {
             case .succeeded: uploaded += 1
             case .failed: failed += 1
             case .interrupted: interrupted += 1
+            case .paused: paused += 1
             default: break
             }
         }
@@ -34,6 +35,7 @@ public enum ActivityText {
         if uploaded > 0 { parts.append("\(uploaded) uploaded") }
         if failed > 0 { parts.append("\(failed) failed") }
         if interrupted > 0 { parts.append("\(interrupted) interrupted") }
+        if paused > 0 { parts.append("\(paused) paused") }
         return parts.joined(separator: " · ")
     }
 

@@ -58,6 +58,8 @@ Only the user's own cancel deletes the half-sent file; every other way an upload
 
 **Recent.** Rows that have a partial on the server (`Item.isResumable`) are exempt from Clear automatically, the count and the Clear button. They are stored apart from the finished rows (`storedInterrupted`), come back after a launch as `.interrupted` (no sound, no red dot) and are kept only while the list is on (`recentLimit > 0`). Removing one is a cancel: `UploadQueue.discard(point)` deletes the half-sent file (for a folder only the file it was in the middle of) over a connection of its own, and if that fails the row stays with the reason and a *Remove from List Anyway* choice, so a partial is never left behind unnoticed.
 
+**Pausing.** `UploadQueue.pause(id)` is a stop like cancel, with the opposite outcome: a waiting upload leaves the line, a running one is cancelled like a cancel (`stopActive(id, .pause)`, with the same force-close of a stuck session), and the queue reports `.resumable` with where it got to and then `.paused`. Nothing is deleted from the server, no failure cue is made and no retry timer runs. A cancel that arrives after a pause still wins (`stops[id]` keeps the stronger one), and an upload that finished before the pause was noticed is simply `.succeeded`. A paused row is `.paused` in `UploadActivity`: finished, out of the batch (so the ring, the count and the sound go on without it), and exempt in the same way as an interrupted one. Resume is `resume(id, from:)` with the stored point, so a paused upload goes through exactly the path of an interrupted one; it waits in the line like any other. `AppModel.canPause` is `recentLimit > 0`: with the list off a paused row would be removed at once and its half-sent file left with nothing to resume from, so the button is greyed instead.
+
 ## Credentials
 
 Only the password is secret. It is stored in the Keychain as a generic password, keyed by `ServerConfig.credentialKey` (`protocol://user@host:port`). Everything else is JSON in `UserDefaults`. When the server identity changes in Settings, the old Keychain item is removed.
@@ -67,7 +69,7 @@ Only the password is secret. It is stored in the Keychain as a generic password,
 - `InMemorySettingsStore` and `InMemoryCredentialStore` ship in the package (also handy for SwiftUI previews).
 - Tests use a `FakeUploader` that records requests and plays back scripted progress or errors.
 - `UploadQueue.waitUntilIdle()` and `finish()` let a test enqueue files, wait, and then read the complete event list deterministically.
-- Resuming has its own unit tests (`ResumeTests`, `InterruptedUploadTests`) and real-server tests (`ResumeIntegrationTests`), which cut a real upload off part of the way and then carry it on, so the server really holds a half-sent file.
+- Resuming has its own unit tests (`ResumeTests`, `InterruptedUploadTests`) and real-server tests (`ResumeIntegrationTests`), which cut a real upload off part of the way and then carry it on, so the server really holds a half-sent file; pausing is tested there too, with a test connection that holds a real transfer still once the server has some bytes, so the pause is not a race with the end of the upload.
 - The FTP parsers are pure value types, so protocol edge cases (multi-line replies, split packets, malformed PASV/EPSV) are tested without a socket.
 
 ## Transfers

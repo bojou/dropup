@@ -155,6 +155,99 @@ struct InterruptedUploadTests {
         #expect(activity.items[0].notice == nil)
     }
 
+    // MARK: Paused uploads
+
+    private func pause(_ activity: inout UploadActivity, _ name: String, at time: Date) -> UUID {
+        let id = start(&activity, name, at: time)
+        activity.apply(.progress(id: id, UploadProgress(bytesSent: 40, totalBytes: 100)), now: time)
+        activity.apply(.paused(id: id), now: time)
+        return id
+    }
+
+    @Test func aPausedUploadStaysInTheListWithWhatItTakesToResume() {
+        var activity = UploadActivity()
+        let id = pause(&activity, "big.bin", at: t0)
+
+        let item = activity.items[0]
+        #expect(item.id == id)
+        #expect(item.state == .paused)
+        #expect(item.bytesSent == 40)
+        #expect(item.resume == point("big.bin"))
+        #expect(item.isResumable)
+        #expect(!activity.canClear)
+    }
+
+    @Test func aPausedUploadIsNotBusyAndRaisesNoFailureCues() {
+        var activity = UploadActivity()
+        _ = pause(&activity, "big.bin", at: t0)
+
+        #expect(!activity.isBusy)
+        #expect(!activity.hasUnseenFailure)
+        #expect(!activity.batchHadFailure)
+        #expect(activity.menubarState(now: t0.addingTimeInterval(10)) == .idle)
+        // Nothing to tell: no sound, no notification.
+        #expect(ActivityText.completionNotice(activity) == nil)
+        #expect(ActivityText.finishedSummary(activity) == "1 paused")
+    }
+
+    @Test func aPausedUploadLeavesTheBatchSoTheRestGoesOnWithoutIt() {
+        var activity = UploadActivity()
+        let id = start(&activity, "a.bin", at: t0)
+        let next = UUID()
+        activity.apply(.queued(id: next, fileName: "b.bin", totalBytes: 100), now: t0)
+        #expect(activity.batchTotal == 2)
+
+        activity.apply(.paused(id: id), now: t0)
+
+        #expect(activity.batchTotal == 1)
+        #expect(activity.isBusy)
+        #expect(ActivityText.uploadingHeader(activity) == "Uploading 1 of 1")
+        // It can be removed, or cancelled, while the others run: it is not being counted.
+        #expect(activity.canDismiss(activity.items.first { $0.id == id }!))
+    }
+
+    @Test func pausedUploadsAreExemptFromTheRecentRules() {
+        var activity = UploadActivity()
+        finish(&activity, "old.png", at: t0)
+        for index in 0..<3 { finish(&activity, "f\(index)", at: t0.addingTimeInterval(Double(index + 1))) }
+        _ = pause(&activity, "big.bin", at: t0)
+
+        activity.applyRecentPolicy(RecentPolicy(limit: 1, lifetime: 60), now: t0.addingTimeInterval(86_400 * 30))
+
+        #expect(activity.items.map(\.fileName) == ["big.bin"])
+        activity.clearFinished()
+        #expect(activity.items.map(\.fileName) == ["big.bin"])
+        #expect(activity.nextRecentExpiry(lifetime: 60) == nil)
+    }
+
+    @Test func aPausedUploadComesBackPausedAfterARelaunch() throws {
+        var activity = UploadActivity()
+        _ = pause(&activity, "big.bin", at: t0)
+
+        let stored = activity.storedInterrupted(now: t0)
+        #expect(stored.count == 1 && stored[0].outcome == .paused && stored[0].isInterrupted)
+        #expect(activity.storedFinished.isEmpty)
+
+        let data = try JSONEncoder().encode(stored)
+        let back = restored(try JSONDecoder().decode([StoredUpload].self, from: data))
+        #expect(back.items[0].state == .paused)
+        #expect(back.items[0].resume == point("big.bin"))
+        #expect(back.items[0].isResumable)
+        #expect(!back.isBusy && !back.hasUnseenFailure)
+    }
+
+    @Test func resumingAPausedUploadQueuesItAgainAsPartOfANewBatch() {
+        var activity = UploadActivity()
+        let id = pause(&activity, "big.bin", at: t0)
+
+        activity.apply(.queued(id: id, fileName: "big.bin", totalBytes: 100), now: t0.addingTimeInterval(5))
+        activity.apply(.resumable(id: id, point("big.bin")), now: t0.addingTimeInterval(5))
+
+        #expect(activity.items.count == 1)
+        #expect(activity.items[0].state == .waiting)
+        #expect(activity.batchTotal == 1)
+    }
+
     // MARK: The rules for Recent
 
     @Test func clearLeavesInterruptedUploadsAlone() {

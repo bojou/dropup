@@ -46,6 +46,8 @@ public enum UploadEvent: Sendable, Equatable {
     case waitingForConnection(id: UUID)
     /// The upload started over from the beginning instead of carrying on, for the reason given.
     case restarted(id: UUID, reason: String)
+    /// The user paused the upload. Whatever was sent stays on the server, and the upload can be resumed later.
+    case paused(id: UUID)
 }
 
 /// Uploads dropped files and folders one at a time and reports what happens on `events`.
@@ -98,7 +100,9 @@ public actor UploadQueue {
     private var pending: [Job] = []
     private var worker: Task<Void, Never>?
     private var active: (id: UUID, task: Task<String, any Error>)?
-    private var cancelledIDs: Set<UUID> = []
+    /// What the user asked of the upload that is running, until it has stopped.
+    private enum Stop { case cancel, pause }
+    private var stops: [UUID: Stop] = [:]
     private var openSession: OpenSession?
 
     /// - Parameters:
@@ -194,15 +198,34 @@ public actor UploadQueue {
             job.scan?.cancel()
             continuation.yield(.cancelled(id: id))
             discardLater(job.resume)
-        } else if let active, active.id == id {
-            cancelledIDs.insert(id)
-            active.task.cancel()
-            // A transfer on a dead connection can't see a cancel. Closing the connection under it makes it let go.
-            let grace = cancelGrace
-            Task { [weak self] in
-                try? await Task.sleep(nanoseconds: UInt64(grace * 1_000_000_000))
-                await self?.closeSessionIfStillRunning(id)
-            }
+        } else {
+            stopActive(id, .cancel)
+        }
+    }
+
+    /// Pauses a waiting or running upload: sending stops, what the server holds stays, and the next upload in the queue
+    /// starts. It carries on later with `resume(_:from:)`, from the `ResumePoint` the queue reported. A cancel that
+    /// comes after a pause still wins and takes the half-sent file away. Does nothing for finished or unknown ids.
+    public func pause(_ id: UUID) {
+        if let index = pending.firstIndex(where: { $0.id == id }) {
+            let job = pending.remove(at: index)
+            job.scan?.cancel()
+            continuation.yield(.paused(id: id))
+        } else {
+            stopActive(id, .pause)
+        }
+    }
+
+    private func stopActive(_ id: UUID, _ how: Stop) {
+        guard let active, active.id == id else { return }
+        // Cancel is the stronger of the two: it is the one that deletes.
+        if stops[id] != .cancel { stops[id] = how }
+        active.task.cancel()
+        // A transfer on a dead connection can't see a cancel. Closing the connection under it makes it let go.
+        let grace = cancelGrace
+        Task { [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(grace * 1_000_000_000))
+            await self?.closeSessionIfStillRunning(id)
         }
     }
 
@@ -282,6 +305,7 @@ public actor UploadQueue {
     private enum Ending {
         case succeeded(String)
         case cancelled
+        case paused
         case failed(UploadFailure)
     }
 
@@ -306,6 +330,11 @@ public actor UploadQueue {
             if let leftover = written.leftover {
                 await delete(leftover)
             }
+        case .paused:
+            await closeSession()
+            // Where it got to, for the row to carry on from. The half-sent file stays where it is.
+            if let point = run.point { continuation.yield(.resumable(id: job.id, point)) }
+            continuation.yield(.paused(id: job.id))
         case .succeeded(let remotePath):
             continuation.yield(.succeeded(id: job.id, remotePath: remotePath))
         case .failed(let failure):
@@ -325,7 +354,10 @@ public actor UploadQueue {
             watchdog.cancel()
             active = nil
 
-            if cancelledIDs.remove(job.id) != nil { return .cancelled }
+            let stop = stops.removeValue(forKey: job.id)
+            // An upload that got all the way through before the pause was noticed is simply done.
+            if case .success(let remotePath) = result, stop == .pause { return .succeeded(remotePath) }
+            if let stop { return stop == .cancel ? .cancelled : .paused }
             let error: any Error
             switch result {
             case .success(let remotePath):
@@ -347,7 +379,7 @@ public actor UploadQueue {
             guard let wait = nextWait(&delays, run: run) else { return .failed(.connectionLost(message)) }
             continuation.yield(.waitingForConnection(id: job.id))
             run.clearStalled()
-            if await sleep(job.id, seconds: wait) { return .cancelled }
+            if let stop = await sleep(job.id, seconds: wait) { return stop == .cancel ? .cancelled : .paused }
         }
     }
 
@@ -361,8 +393,8 @@ public actor UploadQueue {
         return delay
     }
 
-    /// Waits, in a way a cancel can end. Returns whether the user cancelled meanwhile.
-    private func sleep(_ id: UUID, seconds: TimeInterval) async -> Bool {
+    /// Waits, in a way a cancel or a pause can end. Returns what the user asked for meanwhile, if anything.
+    private func sleep(_ id: UUID, seconds: TimeInterval) async -> Stop? {
         let sleeper = Task<String, any Error> {
             try await Task.sleep(nanoseconds: UInt64(max(seconds, 0) * 1_000_000_000))
             return ""
@@ -370,7 +402,7 @@ public actor UploadQueue {
         active = (id, sleeper)
         _ = await sleeper.result
         active = nil
-        return cancelledIDs.remove(id) != nil
+        return stops.removeValue(forKey: id)
     }
 
     /// One timer for the running transfer, with no polling: it sleeps until the moment a stall could first matter and looks

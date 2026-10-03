@@ -328,7 +328,11 @@ private struct UploadRow: View {
         .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(isFailure ? Color.red.opacity(0.08) : .clear))
         .onHover { isHovering = $0 }
         .contextMenu {
-            if isFailure || item.state == .interrupted, model.canRetry(item.id) {
+            if item.state == .waiting || item.state == .uploading {
+                Button("Pause") { model.pause(item.id) }
+                    .disabled(!model.canPause)
+            }
+            if isFailure || item.state == .interrupted || item.state == .paused, model.canRetry(item.id) {
                 Button(model.retryTitle(item.id)) { model.retry(item.id) }
             }
             if canDismiss, !isRemoving {
@@ -406,6 +410,9 @@ private struct UploadRow: View {
             return ActivityText.failureMessage(message, for: item, hidingNames: hidesNames, hiddenPaths: model.hiddenPaths)
         case .interrupted:
             return sizeKnown ? "Interrupted · \(total)" : "Interrupted"
+        case .paused:
+            guard sizeKnown else { return "Paused" }
+            return item.bytesSent > 0 ? "Paused · \(Format.bytes(item.bytesSent)) of \(total)" : "Paused · \(total)"
         case .cancelled:
             return "Cancelled"
         }
@@ -415,15 +422,28 @@ private struct UploadRow: View {
     private var trailing: some View {
         switch item.state {
         case .waiting, .uploading:
-            Button { model.cancel(item.id) } label: {
-                Image(systemName: "xmark")
-                    .font(.system(size: 9, weight: .bold))
-                    .frame(width: 22, height: 22)
-                    .background(Circle().fill(Color.primary.opacity(0.08)))
+            HStack(spacing: 6) {
+                Button { model.pause(item.id) } label: {
+                    Image(systemName: "pause.fill")
+                        .font(.system(size: 9, weight: .bold))
+                        .frame(width: 22, height: 22)
+                        .background(Circle().fill(Color.primary.opacity(0.08)))
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(.secondary)
+                .disabled(!model.canPause)
+                .help(model.canPause ? "Pause" : "Pausing needs Keep recent uploads to be on")
+                .accessibilityLabel("Pause upload")
+                Button { model.cancel(item.id) } label: {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 9, weight: .bold))
+                        .frame(width: 22, height: 22)
+                        .background(Circle().fill(Color.primary.opacity(0.08)))
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(.secondary)
+                .accessibilityLabel("Cancel upload")
             }
-            .buttonStyle(.plain)
-            .foregroundStyle(.secondary)
-            .accessibilityLabel("Cancel upload")
         case .succeeded:
             // The check turns into a cross under the pointer, which removes the upload from the list.
             if isHovering, canDismiss {
@@ -437,7 +457,7 @@ private struct UploadRow: View {
                     .frame(width: 22, height: 22)
                     .accessibilityLabel("Uploaded")
             }
-        case .failed, .interrupted:
+        case .failed, .interrupted, .paused:
             HStack(spacing: 8) {
                 if model.canRetry(item.id) {
                     Button(model.retryTitle(item.id)) { model.retry(item.id) }

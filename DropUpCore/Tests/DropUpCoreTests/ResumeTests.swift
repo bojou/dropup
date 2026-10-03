@@ -493,6 +493,158 @@ struct ResumeUploadTests {
         #expect(session.deletions == ["/drops/big.bin"])
     }
 
+    // MARK: Pause
+
+    private func lastPoint(_ events: [UploadEvent], of id: UUID) -> ResumePoint? {
+        events.reversed().compactMap { event -> ResumePoint? in
+            if case .resumable(let eventID, let point) = event, eventID == id { point } else { nil }
+        }.first
+    }
+
+    @Test func pausingARunningUploadKeepsItsPartialFileAndLetsTheNextOneStart() async throws {
+        let temp = try TempFiles()
+        defer { temp.remove() }
+        let first = try temp.file(named: "a.bin", size: 1000)
+        let second = try temp.file(named: "b.bin", size: 1000)
+        // Each upload takes ten seconds unless something stops it.
+        let session = FakeSession(uploadDelayMilliseconds: 10_000)
+        let queue = makeQueue(FakeConnector(session: session))
+        var ids: [UUID] = []
+
+        let all = try await events(of: queue) {
+            ids = await queue.enqueue([first, second])
+            try await eventually { session.size(of: "/drops/a.bin") != nil }
+            await queue.pause(ids[0])
+            try await eventually { session.uploads.count == 2 }
+            await queue.cancel(ids[1])
+        }
+
+        #expect(all.contains(.paused(id: ids[0])))
+        #expect(!all.contains(.cancelled(id: ids[0])))
+        // The half-sent file is still there, and the one behind it went on.
+        #expect(session.exists("/drops/a.bin"))
+        #expect(session.deletions == ["/drops/b.bin"])
+        #expect(session.uploads == ["/drops/a.bin", "/drops/b.bin"])
+        // The row has what it takes to carry on: the file on the server is the upload's own.
+        let point = try #require(lastPoint(all, of: ids[0]))
+        #expect(point.created && point.partialPath == "/drops/a.bin")
+    }
+
+    @Test func aPausedUploadCarriesOnFromWhereItWasLeft() async throws {
+        let temp = try TempFiles()
+        defer { temp.remove() }
+        let file = try temp.file(named: "big.bin", size: 1000)
+        let slow = FakeSession(uploadDelayMilliseconds: 10_000)
+        let firstQueue = makeQueue(FakeConnector(session: slow))
+        var id = UUID()
+
+        let paused = try await events(of: firstQueue) {
+            id = await firstQueue.enqueue([file])[0]
+            try await eventually { slow.size(of: "/drops/big.bin") != nil }
+            await firstQueue.pause(id)
+        }
+        let point = try #require(lastPoint(paused, of: id))
+        #expect(paused.last == .paused(id: id))
+
+        // After a relaunch, with what the server holds: 400 bytes.
+        let session = FakeSession(sizes: ["/drops/big.bin": 400])
+        let queue = makeQueue(FakeConnector(session: session))
+        let all = try await events(of: queue) { await queue.resume(id, from: point) }
+
+        #expect(session.uploadOffsets == [400])
+        #expect(all.last == .succeeded(id: id, remotePath: "/drops/big.bin"))
+        #expect(reasons(all).isEmpty)
+    }
+
+    @Test func aWaitingUploadCanBePausedBeforeItStarts() async throws {
+        let temp = try TempFiles()
+        defer { temp.remove() }
+        let busy = try temp.file(named: "busy.bin", size: 1000)
+        let waiting = try temp.file(named: "waiting.bin", size: 1000)
+        let session = FakeSession(uploadDelayMilliseconds: 10_000)
+        let queue = makeQueue(FakeConnector(session: session))
+        var ids: [UUID] = []
+
+        let all = try await events(of: queue) {
+            ids = await queue.enqueue([busy, waiting])
+            try await eventually { session.size(of: "/drops/busy.bin") != nil }
+            await queue.pause(ids[1])
+            await queue.cancel(ids[0])
+        }
+
+        #expect(all.contains(.paused(id: ids[1])))
+        #expect(!all.contains(.started(id: ids[1])))
+        #expect(session.uploads == ["/drops/busy.bin"])
+    }
+
+    @Test func pausingWhileItWaitsToTryAgainStopsTheWaiting() async throws {
+        let temp = try TempFiles()
+        defer { temp.remove() }
+        let file = try temp.file(named: "big.bin", size: 1000)
+        let session = FakeSession(drops: [400])
+        let queue = makeQueue(FakeConnector(session: session), reconnect: ReconnectPolicy(delays: [30], giveUpAfter: 100, noticeAfter: 50))
+        var id = UUID()
+
+        let started = Date()
+        let all = try await events(of: queue) {
+            id = await queue.enqueue([file])[0]
+            try await eventually { session.size(of: "/drops/big.bin") == 400 }
+            // The connection broke and the upload now waits for its next try.
+            try await Task.sleep(nanoseconds: 100_000_000)
+            await queue.pause(id)
+        }
+
+        #expect(all.contains(.paused(id: id)))
+        #expect(session.uploads.count == 1)
+        #expect(session.deletions.isEmpty)
+        #expect(Date().timeIntervalSince(started) < 20)
+    }
+
+    @Test func aTransferThatCantSeeAPauseIsClosedUnderToo() async throws {
+        let temp = try TempFiles()
+        defer { temp.remove() }
+        let file = try temp.file(named: "big.bin", size: 1000)
+        let session = FakeSession(stuckUntilClosed: true)
+        let queue = makeQueue(FakeConnector(session: session), cancelGrace: 0.05)
+        var id = UUID()
+
+        let all = try await events(of: queue) {
+            id = await queue.enqueue([file])[0]
+            try await eventually { session.size(of: "/drops/big.bin") != nil }
+            await queue.pause(id)
+        }
+
+        #expect(all.last == .paused(id: id))
+        #expect(session.deletions.isEmpty)
+        #expect(session.closeCount >= 1)
+    }
+
+    @Test func aCancelAfterAPauseStillTakesTheHalfSentFileAway() async throws {
+        let temp = try TempFiles()
+        defer { temp.remove() }
+        let file = try temp.file(named: "big.bin", size: 1000)
+        let session = FakeSession(stuckUntilClosed: true)
+        let queue = makeQueue(FakeConnector(session: session), cancelGrace: 0.05)
+        var id = UUID()
+
+        let all = try await events(of: queue) {
+            id = await queue.enqueue([file])[0]
+            try await eventually { session.size(of: "/drops/big.bin") != nil }
+            await queue.pause(id)
+            await queue.cancel(id)
+        }
+
+        #expect(all.contains(.cancelled(id: id)))
+        #expect(!all.contains(.paused(id: id)))
+        #expect(session.deletions == ["/drops/big.bin"])
+    }
+
+    @Test func pausingSomethingThatIsNotRunningDoesNothing() async throws {
+        let queue = makeQueue(FakeConnector())
+        let all = try await events(of: queue) { await queue.pause(UUID()) }
+        #expect(all.isEmpty)
+    }
+
     // MARK: Cancel and discard
 
     @Test func cancellingWhileItWaitsToTryAgainTakesTheHalfSentFileAway() async throws {

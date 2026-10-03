@@ -180,8 +180,14 @@ final class FakeSession: ServerSession, @unchecked Sendable {
         }
         progress(offset)
         if stuckUntilClosed {
-            // Deaf to a cancel: only closing the connection lets go.
-            while !lock.withLock({ _closed }) { try? await Task.sleep(nanoseconds: 1_000_000) }
+            // Deaf to a cancel: only closing the connection lets go. It waits on a timer that a cancel can't cut short: a
+            // sleep that is cancelled returns at once, and a loop of those would hold on to its thread and starve the
+            // very task that has to close the connection.
+            while !lock.withLock({ _closed }) {
+                await withCheckedContinuation { continuation in
+                    DispatchQueue.global().asyncAfter(deadline: .now() + .milliseconds(2)) { continuation.resume() }
+                }
+            }
             throw UploaderError.connectionFailed("The connection was lost.")
         }
         if hangAfterCreatingFile { try await Self.hang() }

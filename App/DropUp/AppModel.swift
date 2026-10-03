@@ -150,8 +150,18 @@ final class AppModel {
         Task { await queue.cancelAll() }
     }
 
-    /// Whether a failed or interrupted upload can be sent again: while DropUp runs it knows where the file is, and
-    /// one that was kept across a quit has that written down with it.
+    /// Pauses a waiting or running upload. What was sent stays on the server, and the next upload in the line starts.
+    func pause(_ id: UUID) {
+        guard canPause else { return }
+        Task { await queue.pause(id) }
+    }
+
+    /// A paused upload is a row in Recent, and with the list off there is none: pausing would leave a half-sent file
+    /// with nothing to carry it on from.
+    var canPause: Bool { preferences.recentLimit > 0 }
+
+    /// Whether a failed, interrupted or paused upload can be sent again: while DropUp runs it knows where the file is,
+    /// and one that was kept across a quit has that written down with it.
     func canRetry(_ id: UUID) -> Bool {
         guard !removing.contains(id) else { return false }
         return sourceURLs[id] != nil || row(id)?.resume != nil
@@ -160,15 +170,15 @@ final class AppModel {
     /// `Resume` for an upload that has part of its file on the server, `Retry` for one that starts from the beginning.
     func retryTitle(_ id: UUID) -> String {
         guard let item = row(id) else { return "Retry" }
-        if item.state == .interrupted { return "Resume" }
+        if item.state == .interrupted || item.state == .paused { return "Resume" }
         return item.resume?.hasProgress == true ? "Resume" : "Retry"
     }
 
     func retry(_ id: UUID) {
         guard canRetry(id) else { return }
         removalProblems[id] = nil
-        if let point = row(id)?.resume, point.hasProgress {
-            // Part of it is on the server: carry on from there, as the same row.
+        if let item = row(id), let point = item.resume, point.hasProgress || item.state == .paused {
+            // Part of it is on the server, or the user only paused it: carry on from there, as the same row.
             sourceURLs[id] = point.sourceURL
             destinations[id] = point.directory
             uploadFolders[id] = point.directory ?? point.config?.remoteDirectory
@@ -308,7 +318,7 @@ final class AppModel {
         now = Date()
         activity.apply(event, now: now)
         switch event {
-        case .succeeded, .failed, .cancelled:
+        case .succeeded, .failed, .cancelled, .paused:
             forgetUnusedSources()
             refreshClock(after: 2.1)
         case .resumable:
@@ -332,7 +342,7 @@ final class AppModel {
         }
         // After the notice, which is worded from the batch's own items: the rules may remove them.
         switch event {
-        case .succeeded, .failed, .cancelled: pruneRecent()
+        case .succeeded, .failed, .cancelled, .paused: pruneRecent()
         default: break
         }
     }
