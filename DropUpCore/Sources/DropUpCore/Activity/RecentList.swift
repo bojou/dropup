@@ -45,6 +45,8 @@ public struct StoredUpload: Codable, Equatable, Sendable {
         case succeeded, failed, cancelled
         /// Not done when DropUp quit: it was running or waiting, or an earlier launch had already restored it so.
         case interrupted
+        /// Paused by the user, to be resumed later.
+        case paused
     }
 
     public var fileName: String
@@ -68,7 +70,7 @@ public struct StoredUpload: Codable, Equatable, Sendable {
     /// Whether this is an upload to carry on rather than one that is over: it stopped with part of it on the server.
     public var isInterrupted: Bool {
         guard let resume else { return false }
-        return outcome == .interrupted || (outcome == .failed && resume.hasProgress)
+        return outcome == .interrupted || outcome == .paused || (outcome == .failed && resume.hasProgress)
     }
 }
 
@@ -143,7 +145,7 @@ extension UploadActivity {
                 return StoredUpload(fileName: item.fileName, totalBytes: item.totalBytes, outcome: .failed, detail: message, finishedAt: finishedAt, resume: item.resume)
             case .cancelled:
                 return StoredUpload(fileName: item.fileName, totalBytes: item.totalBytes, outcome: .cancelled, detail: "", finishedAt: finishedAt)
-            case .waiting, .uploading, .interrupted:
+            case .waiting, .uploading, .interrupted, .paused:
                 return nil
             }
         }
@@ -161,6 +163,8 @@ extension UploadActivity {
             case .failed(let message):
                 guard item.isResumable else { return nil }
                 return StoredUpload(fileName: item.fileName, totalBytes: item.totalBytes, outcome: .failed, detail: message, finishedAt: item.finishedAt ?? now, resume: resume)
+            case .paused:
+                return StoredUpload(fileName: item.fileName, totalBytes: item.totalBytes, outcome: .paused, detail: "", finishedAt: item.finishedAt ?? now, resume: resume)
             case .succeeded, .cancelled:
                 return nil
             }
@@ -182,10 +186,10 @@ extension UploadActivity {
                 item.resume = stored.resume
             case .cancelled:
                 item.state = .cancelled
-            case .interrupted:
+            case .interrupted, .paused:
                 // Without what it takes to carry on there is nothing to offer, so it is not listed at all.
                 guard stored.resume != nil else { continue }
-                item.state = .interrupted
+                item.state = stored.outcome == .paused ? .paused : .interrupted
                 item.resume = stored.resume
             }
             items.append(item)

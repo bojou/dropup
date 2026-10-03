@@ -453,6 +453,162 @@ struct ResumeIntegrationTests {
         let offset = try #require(carried.offsets.first)
         #expect(offset > 0)
     }
+
+    // MARK: Pausing
+
+    private func isPaused(_ events: [UploadEvent], _ id: UUID) -> Bool { events.contains(.paused(id: id)) }
+
+    private func waitForServer(_ path: String, toHold bytes: Int) async throws {
+        for _ in 0..<1000 where (serverSize(path) ?? 0) < bytes {
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        #expect((serverSize(path) ?? 0) >= bytes)
+    }
+
+    @Test(.enabled(if: ResumeIntegrationTests.enabled), arguments: [TransferProtocol.ftp, .sftp])
+    func pausingKeepsThePartialFileAndLetsTheNextUploadThrough(_ transferProtocol: TransferProtocol) async throws {
+        let big = uniqueName()
+        let small = uniqueName("txt")
+        let fm = FileManager.default
+        let bigLocal = fm.temporaryDirectory.appendingPathComponent(big)
+        let smallLocal = fm.temporaryDirectory.appendingPathComponent(small)
+        try randomData(6_000_000).write(to: bigLocal)
+        try Data("small".utf8).write(to: smallLocal)
+        defer {
+            try? fm.removeItem(at: bigLocal)
+            try? fm.removeItem(at: smallLocal)
+            removeFromServer([big, small])
+        }
+
+        let board = Switchboard()
+        board.hold(path: big, after: 2_000_000)
+        let queue = makeQueue(config(transferProtocol), board, reconnect: giveUpAtOnce)
+        let ids = await queue.enqueue([bigLocal, smallLocal])
+        try await waitForServer("/ops/" + big, toHold: 1_000_000)
+        await queue.pause(ids[0])
+        let events = await finish(queue)
+
+        #expect(isPaused(events, ids[0]))
+        #expect(events.contains(.succeeded(id: ids[1], remotePath: "/ops/\(small)")))
+        #expect(serverFile("/ops/" + small) == Data("small".utf8))
+        // A pause is no failure, and it takes nothing off the server.
+        #expect(!events.contains { if case .failed = $0 { true } else { false } })
+        #expect(!events.contains(.cancelled(id: ids[0])))
+        let partial = try #require(try await settledSize("/ops/" + big))
+        #expect(partial > 0 && partial < 6_000_000)
+        let point = try #require(lastPoint(events, of: ids[0]))
+        #expect(point.created && point.remotePath == "/ops/\(big)")
+    }
+
+    @Test(.enabled(if: ResumeIntegrationTests.enabled), arguments: [TransferProtocol.ftp, .sftp])
+    func aPausedUploadResumesAfterARelaunchFromWhatTheServerHolds(_ transferProtocol: TransferProtocol) async throws {
+        let name = uniqueName()
+        let local = FileManager.default.temporaryDirectory.appendingPathComponent(name)
+        let data = randomData(6_000_000)
+        try data.write(to: local)
+        defer {
+            try? FileManager.default.removeItem(at: local)
+            removeFromServer([name, name.replacingOccurrences(of: ".bin", with: "-1.bin")])
+        }
+
+        let board = Switchboard()
+        board.hold(path: name, after: 2_000_000)
+        let first = makeQueue(config(transferProtocol), board, reconnect: giveUpAtOnce)
+        let id = await first.enqueue([local])[0]
+        try await waitForServer("/ops/" + name, toHold: 1_000_000)
+        await first.pause(id)
+        let paused = await finish(first)
+        #expect(isPaused(paused, id))
+        let point = try roundTrip(#require(lastPoint(paused, of: id)))
+        let partial = try #require(try await settledSize("/ops/" + name))
+        #expect(partial > 0 && partial < data.count)
+
+        // A new queue, as after a relaunch, knowing only what was written down.
+        let carried = Switchboard()
+        let second = makeQueue(config(transferProtocol), carried, reconnect: giveUpAtOnce)
+        await second.resume(id, from: point)
+        let events = await finish(second)
+
+        #expect(events.last == .succeeded(id: id, remotePath: "/ops/\(name)"))
+        #expect(serverFile("/ops/" + name) == data)
+        #expect(restarts(events).isEmpty)
+        let offset = try #require(carried.offsets.first)
+        #expect(offset > 0 && offset <= Int64(partial))
+        #expect(serverSize("/ops/" + name.replacingOccurrences(of: ".bin", with: "-1.bin")) == nil)
+    }
+
+    @Test(.enabled(if: ResumeIntegrationTests.enabled), arguments: [TransferProtocol.ftp, .sftp])
+    func cancellingAPausedUploadTakesItsPartialFileOffTheServer(_ transferProtocol: TransferProtocol) async throws {
+        let name = uniqueName()
+        let local = FileManager.default.temporaryDirectory.appendingPathComponent(name)
+        try randomData(6_000_000).write(to: local)
+        defer {
+            try? FileManager.default.removeItem(at: local)
+            removeFromServer([name])
+        }
+
+        let board = Switchboard()
+        board.hold(path: name, after: 2_000_000)
+        let queue = makeQueue(config(transferProtocol), board, reconnect: giveUpAtOnce)
+        let id = await queue.enqueue([local])[0]
+        try await waitForServer("/ops/" + name, toHold: 1_000_000)
+        await queue.pause(id)
+        let events = await finish(queue)
+        let point = try roundTrip(#require(lastPoint(events, of: id)))
+        #expect(try await settledSize("/ops/" + name) != nil)
+
+        // The cross on a paused row is a cancel.
+        let problem = await makeQueue(config(transferProtocol), Switchboard(), reconnect: giveUpAtOnce).discard(point)
+        #expect(problem == nil)
+        #expect(serverSize("/ops/" + name) == nil)
+    }
+
+    @Test(.enabled(if: ResumeIntegrationTests.enabled), arguments: [TransferProtocol.ftp, .sftp])
+    func aPausedFolderCarriesOnWithTheFilesItHasntDone(_ transferProtocol: TransferProtocol) async throws {
+        let fm = FileManager.default
+        let folder = fm.temporaryDirectory.appendingPathComponent("it-folder-\(UUID().uuidString.prefix(8))")
+        let name = folder.lastPathComponent
+        try fm.createDirectory(at: folder.appendingPathComponent("b"), withIntermediateDirectories: true)
+        let files: [(path: String, data: Data)] = [
+            ("a.txt", Data("first".utf8)),
+            ("b/big.bin", randomData(6_000_000)),
+            ("c.txt", Data("third".utf8)),
+        ]
+        for file in files { try file.data.write(to: folder.appendingPathComponent(file.path)) }
+        defer {
+            try? fm.removeItem(at: folder)
+            removeFromServer([name, name + "-1"])
+        }
+
+        let board = Switchboard()
+        board.hold(path: "big.bin", after: 2_000_000)
+        let first = makeQueue(config(transferProtocol), board, reconnect: giveUpAtOnce)
+        let id = await first.enqueue([folder])[0]
+        try await waitForServer("/ops/\(name)/b/big.bin", toHold: 1_000_000)
+        await first.pause(id)
+        let paused = await finish(first)
+
+        #expect(isPaused(paused, id))
+        let point = try roundTrip(#require(lastPoint(paused, of: id)))
+        #expect(point.isFolder && point.created)
+        #expect(point.finishedFiles == 1 && point.currentFile == "b/big.bin")
+        // The folder stays as it is: the finished file is there, and so is the half-sent one.
+        #expect(serverFile("/ops/\(name)/a.txt") == Data("first".utf8))
+        let partial = try #require(try await settledSize("/ops/\(name)/b/big.bin"))
+        #expect(partial > 0 && partial < 6_000_000)
+
+        let carried = Switchboard()
+        let second = makeQueue(config(transferProtocol), carried, reconnect: giveUpAtOnce)
+        await second.resume(id, from: point)
+        let events = await finish(second)
+
+        #expect(events.last == .succeeded(id: id, remotePath: "/ops/\(name)"))
+        for file in files { #expect(serverFile("/ops/\(name)/\(file.path)") == file.data, "\(file.path)") }
+        #expect(serverSize("/ops/\(name)-1") == nil)
+        #expect(!carried.uploaded.contains { $0.hasSuffix("/a.txt") })
+        #expect(carried.uploaded.first?.hasSuffix("/b/big.bin") == true)
+        #expect(try #require(carried.offsets.first) > 0)
+    }
 }
 
 // MARK: Cutting connections
@@ -460,7 +616,7 @@ struct ResumeIntegrationTests {
 /// What the tests do to the connections: cut an upload off after some bytes, and keep the network down for a while.
 private final class Switchboard: @unchecked Sendable {
     private let lock = NSLock()
-    private var cuts: [(path: String, after: Int64, down: TimeInterval)] = []
+    private var cuts: [(path: String, after: Int64, down: TimeInterval, holds: Bool)] = []
     private var downUntil: Date?
     private var recordedOffsets: [Int64] = []
     private var recordedUploads: [String] = []
@@ -469,7 +625,13 @@ private final class Switchboard: @unchecked Sendable {
     /// The next upload whose path ends with `path` is cut off once the server holds `after` bytes, and then no
     /// connection can be made for `thenDownFor` seconds.
     func cut(path: String, after: Int64, thenDownFor down: TimeInterval = 0) {
-        lock.withLock { cuts.append((path, after, down)) }
+        lock.withLock { cuts.append((path, after, down, false)) }
+    }
+
+    /// Like `cut`, but the connection is not lost: the real transfer stops once the server holds `after` bytes and the
+    /// upload then waits, as one that is being paused does, until the queue lets go of it.
+    func hold(path: String, after: Int64) {
+        lock.withLock { cuts.append((path, after, 0, true)) }
     }
 
     func networkIsDown() { lock.withLock { downUntil = .distantFuture } }
@@ -488,12 +650,12 @@ private final class Switchboard: @unchecked Sendable {
         }
     }
 
-    func startUpload(to path: String, offset: Int64) -> Int64? {
+    func startUpload(to path: String, offset: Int64) -> (limit: Int64, holds: Bool)? {
         lock.withLock {
             recordedUploads.append(path)
             recordedOffsets.append(offset)
             guard let index = cuts.firstIndex(where: { path.hasSuffix($0.path) }) else { return nil }
-            return cuts[index].after
+            return (cuts[index].after, cuts[index].holds)
         }
     }
 
@@ -562,7 +724,7 @@ private final class BreakingSession: ServerSession, @unchecked Sendable {
     }
 
     func upload(fileURL: URL, to remotePath: String, startingAt offset: Int64, progress: @escaping @Sendable (Int64) -> Void) async throws {
-        guard let limit = board.startUpload(to: remotePath, offset: offset) else {
+        guard let (limit, holds) = board.startUpload(to: remotePath, offset: offset) else {
             try await inner.upload(fileURL: fileURL, to: remotePath, startingAt: offset, progress: progress)
             return
         }
@@ -580,6 +742,10 @@ private final class BreakingSession: ServerSession, @unchecked Sendable {
             guard trip.fired else { throw error }
             await close()
             board.cutHappened(on: remotePath)
+            if holds {
+                // Nothing is lost here: the upload stands still until a pause or a cancel ends it, which stops the sleep.
+                try await Task.sleep(nanoseconds: 3_600_000_000_000)
+            }
             throw UploaderError.connectionFailed("The connection was lost.")
         }
     }

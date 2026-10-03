@@ -22,12 +22,14 @@ public struct UploadActivity: Equatable, Sendable {
         case failed(message: String)
         /// DropUp quit, or crashed, before this one was done. It was restored after a relaunch and waits to be resumed.
         case interrupted
+        /// The user paused it. Whatever was sent stays on the server, and it waits to be resumed.
+        case paused
         case cancelled
 
         public var isFinished: Bool {
             switch self {
             case .waiting, .uploading: false
-            case .succeeded, .failed, .interrupted, .cancelled: true
+            case .succeeded, .failed, .interrupted, .paused, .cancelled: true
             }
         }
     }
@@ -52,7 +54,7 @@ public struct UploadActivity: Equatable, Sendable {
         public var isResumable: Bool {
             guard let resume else { return false }
             switch state {
-            case .interrupted: return true
+            case .interrupted, .paused: return true
             case .failed: return resume.hasProgress
             default: return false
             }
@@ -215,6 +217,17 @@ public struct UploadActivity: Equatable, Sendable {
                 $0.isReconnecting = false
             }
             finish(id, now)
+
+        case .paused(let id):
+            update(id) {
+                $0.state = .paused
+                $0.notice = nil
+                $0.isReconnecting = false
+            }
+            // A paused upload is not part of what is being sent: the ring, the count and the sound go on without it, and
+            // it is no failure. Resuming it queues it again as a new part of the batch.
+            batchIDs.remove(id)
+            finish(id, now, counting: items.first { $0.id == id }?.bytesSent ?? 0)
         }
     }
 
@@ -275,11 +288,11 @@ public struct UploadActivity: Equatable, Sendable {
     }
 
     /// Moves a just-finished item to the top of the finished section (newest first).
-    private mutating func finish(_ id: UUID, _ now: Date) {
+    private mutating func finish(_ id: UUID, _ now: Date, counting counted: Int64? = nil) {
         guard let index = items.firstIndex(where: { $0.id == id }) else { return }
         var item = items.remove(at: index)
         item.finishedAt = now
-        bytesFinished += item.totalBytes
+        bytesFinished += counted ?? item.totalBytes
         recordSample(now)
         let firstFinished = items.firstIndex { $0.state.isFinished } ?? items.endIndex
         items.insert(item, at: firstFinished)
