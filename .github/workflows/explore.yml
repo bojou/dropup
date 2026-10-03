@@ -11,8 +11,10 @@ jobs:
       - name: Print Sparkle headers
         run: |
           xcodegen generate
-          xcodebuild -resolvePackageDependencies -project DropUp.xcodeproj -derivedDataPath build > /dev/null 2>&1 || true
-          H=build/SourcePackages/artifacts/sparkle/Sparkle/Sparkle.xcframework/macos-arm64_x86_64/Sparkle.framework/Headers
+          xcodebuild -resolvePackageDependencies -project DropUp.xcodeproj -scheme DropUp -clonedSourcePackagesDirPath build/SourcePackages 2>&1 | tail -15
+          F="$(find build/SourcePackages -name SPUStandardUserDriverDelegate.h | head -1)"
+          echo "found: $F"
+          H="$(dirname "$F")"
           ls "$H"
           for f in SPUStandardUserDriverDelegate.h SPUUserUpdateState.h SPUStandardUserDriver.h; do
             echo "=================== $f"
