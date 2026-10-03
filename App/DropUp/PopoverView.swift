@@ -18,12 +18,14 @@ struct PopoverView: View {
     let openSettings: () -> Void
     let openBrowse: () -> Void
     let openChooseFolder: () -> Void
+    let openUpdate: () -> Void
     @State private var isDropTargeted = false
 
     var body: some View {
         let activity = model.activity
         return VStack(spacing: PopoverLayout.spacing) {
             header
+            updateNotice
             if activity.isBusy {
                 dropMoreStrip
             } else if activity.items.isEmpty {
@@ -82,6 +84,28 @@ struct PopoverView: View {
         }
         .padding(.leading, 4)
         .padding(.bottom, 4)
+    }
+
+    /// A new version is waiting. Sparkle's window, with the notes and the choice to install, opens from the button.
+    @ViewBuilder
+    private var updateNotice: some View {
+        if let version = model.updates.availableVersion {
+            HStack(spacing: 10) {
+                Image(systemName: "arrow.down.circle.fill")
+                    .font(.system(size: 16))
+                    .foregroundStyle(Color.accentColor)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("Update available").font(.system(size: 12, weight: .semibold))
+                    Text("DropUp \(version)").font(.system(size: 11)).foregroundStyle(.secondary)
+                }
+                Spacer(minLength: 0)
+                Button("Update…", action: openUpdate)
+                    .controlSize(.small)
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 8)
+            .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(Color.accentColor.opacity(0.12)))
+        }
     }
 
     private var readyZone: some View {
