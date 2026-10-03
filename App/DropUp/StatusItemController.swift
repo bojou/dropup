@@ -14,8 +14,11 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
     private let onChooseFolder: () -> Void
     private let popover = NSPopover()
     private let badge = CALayer()
-    /// Blue dot in the same corner: a new version is waiting. A failed upload's red dot takes its place when both apply.
+    /// Purple dot in the same corner: a new version is waiting. A failed upload's red dot takes its place when both apply.
     private let updateBadge = CALayer()
+    /// Both dots are this wide (edge included) and have a thin white edge, so they stay visible on any menubar background.
+    private static let dotSize: CGFloat = 10
+    private static let dotEdge: CGFloat = 1
     private var clickAwayMonitor: Any?
     private var escapeMonitor: Any?
 
@@ -44,17 +47,15 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
             button.addSubview(dropView)
 
             button.wantsLayer = true
-            badge.backgroundColor = NSColor.systemRed.cgColor
-            badge.frame = CGRect(x: button.bounds.width - 11, y: button.bounds.height - 11, width: 7, height: 7)
-            badge.cornerRadius = 3.5
-            badge.isHidden = true
-            button.layer?.addSublayer(badge)
-
-            updateBadge.backgroundColor = NSColor.systemBlue.cgColor
-            updateBadge.frame = badge.frame
-            updateBadge.cornerRadius = 3.5
-            updateBadge.isHidden = true
-            button.layer?.addSublayer(updateBadge)
+            for (layer, color) in [(badge, NSColor.systemRed), (updateBadge, NSColor.systemPurple)] {
+                layer.backgroundColor = color.cgColor
+                layer.frame = Self.dotFrame(in: button.bounds)
+                layer.cornerRadius = Self.dotSize / 2
+                layer.borderColor = NSColor.white.cgColor
+                layer.borderWidth = Self.dotEdge
+                layer.isHidden = true
+                button.layer?.addSublayer(layer)
+            }
         }
 
         let content = PopoverView(
@@ -72,6 +73,11 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
         popover.delegate = self
 
         render()
+    }
+
+    /// The dot's place: its centre sits 7 pt in from the icon's top and right edges.
+    private static func dotFrame(in bounds: CGRect) -> CGRect {
+        CGRect(x: bounds.width - 7 - dotSize / 2, y: bounds.height - 7 - dotSize / 2, width: dotSize, height: dotSize)
     }
 
     /// The icon's rectangle in screen coordinates, or nil when it isn't on screen.
