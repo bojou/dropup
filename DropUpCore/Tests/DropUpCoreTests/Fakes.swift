@@ -23,7 +23,7 @@ final class FakeSession: ServerSession, @unchecked Sendable {
     private let hangAfterCreatingFile: Bool
     private let deleteError: (any Error)?
     private let hangOnDelete: Bool
-    private let listDelayMilliseconds: UInt64
+    private var _listDelayMilliseconds: UInt64
     private let uploadDelayMilliseconds: UInt64
     private let makeDirectoryDelayMilliseconds: UInt64
     private var _madeDirectories: [String] = []
@@ -92,10 +92,13 @@ final class FakeSession: ServerSession, @unchecked Sendable {
         self.hangAfterCreatingFile = hangAfterCreatingFile
         self.deleteError = deleteError
         self.hangOnDelete = hangOnDelete
-        self.listDelayMilliseconds = listDelayMilliseconds
+        _listDelayMilliseconds = listDelayMilliseconds
         self.uploadDelayMilliseconds = uploadDelayMilliseconds
         self.makeDirectoryDelayMilliseconds = makeDirectoryDelayMilliseconds
     }
+
+    /// Changes how long each `listEntries` call takes from now on.
+    func setListDelay(milliseconds: UInt64) { lock.withLock { _listDelayMilliseconds = milliseconds } }
 
     /// The offset each upload started at, in the order uploads started.
     var uploadOffsets: [Int64] { lock.withLock { _offsets } }
@@ -154,7 +157,7 @@ final class FakeSession: ServerSession, @unchecked Sendable {
             return _listFailures.isEmpty ? nil : _listFailures.removeFirst()
         }
         defer { lock.withLock { _listingsRunning -= 1 } }
-        try await Task.sleep(nanoseconds: listDelayMilliseconds * 1_000_000)
+        try await Task.sleep(nanoseconds: lock.withLock { _listDelayMilliseconds } * 1_000_000)
         if let failure { throw failure }
         if let error { throw error }
         return entries[path] ?? []
@@ -251,10 +254,13 @@ final class FakeConnector: ServerConnector, ConnectorFactory, @unchecked Sendabl
     private var _connections: [(ServerConfig, String)] = []
     let session: FakeSession
     let connectError: (any Error)?
+    /// How long the first connection takes (a cancel cuts the wait short), for a connection that is slow to come up.
+    private let firstConnectMilliseconds: UInt64
 
-    init(session: FakeSession = FakeSession(), connectError: (any Error)? = nil) {
+    init(session: FakeSession = FakeSession(), connectError: (any Error)? = nil, firstConnectMilliseconds: UInt64 = 0) {
         self.session = session
         self.connectError = connectError
+        self.firstConnectMilliseconds = firstConnectMilliseconds
     }
 
     var connectionCount: Int { lock.withLock { _connections.count } }
@@ -262,7 +268,11 @@ final class FakeConnector: ServerConnector, ConnectorFactory, @unchecked Sendabl
     var configs: [ServerConfig] { lock.withLock { _connections.map(\.0) } }
 
     func connect(to config: ServerConfig, password: String) async throws -> any ServerSession {
-        lock.withLock { _connections.append((config, password)) }
+        let first = lock.withLock { () -> Bool in
+            _connections.append((config, password))
+            return _connections.count == 1
+        }
+        if first, firstConnectMilliseconds > 0 { try await Task.sleep(nanoseconds: firstConnectMilliseconds * 1_000_000) }
         if let connectError { throw connectError }
         return session
     }

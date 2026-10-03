@@ -14,7 +14,7 @@ struct ResumeIntegrationTests {
 
     private func config(_ transferProtocol: TransferProtocol) -> ServerConfig {
         let port = Int(ProcessInfo.processInfo.environment[transferProtocol == .ftp ? "DROPUP_IT_FTP_PORT" : "DROPUP_IT_SFTP_PORT"] ?? "") ?? 0
-        return ServerConfig(transferProtocol: transferProtocol, host: "127.0.0.1", port: port, username: "me", remoteDirectory: "/drops")
+        return ServerConfig(transferProtocol: transferProtocol, host: "127.0.0.1", port: port, username: "me", remoteDirectory: "/ops")
     }
 
     private func makeQueue(
@@ -36,14 +36,19 @@ struct ResumeIntegrationTests {
         )
     }
 
+    /// Random-looking bytes that are cheap to make: one random block of an odd length, repeated. A chunk that is dropped,
+    /// repeated or moved by anything but exactly that length changes the content, which is what the comparisons look for.
     private func randomData(_ count: Int) -> Data {
-        var data = Data(count: count)
-        data.withUnsafeMutableBytes { buffer in
+        let blockSize = min(count, 1_000_003)
+        var block = Data(count: blockSize)
+        block.withUnsafeMutableBytes { buffer in
             var generator = SystemRandomNumberGenerator()
-            for offset in stride(from: 0, to: count - 7, by: 8) {
+            for offset in stride(from: 0, to: blockSize - 7, by: 8) {
                 buffer.storeBytes(of: UInt64.random(in: .min ... .max, using: &generator), toByteOffset: offset, as: UInt64.self)
             }
         }
+        var data = Data(capacity: count)
+        while data.count < count { data.append(block.prefix(count - data.count)) }
         return data
     }
 
@@ -71,7 +76,7 @@ struct ResumeIntegrationTests {
     }
 
     private func removeFromServer(_ names: [String]) {
-        for name in names { try? FileManager.default.removeItem(atPath: serverPath("/drops/" + name)) }
+        for name in names { try? FileManager.default.removeItem(atPath: serverPath("/ops/" + name)) }
     }
 
     /// Everything the queue reported, once it has nothing left to do.
@@ -128,7 +133,7 @@ struct ResumeIntegrationTests {
 
         #expect(isConnectionLost(events, id))
         let point = try #require(lastPoint(events, of: id))
-        let settled = try await settledSize("/drops/" + name)
+        let settled = try await settledSize("/ops/" + name)
         let partial = try #require(settled)
         return Interrupted(name: name, local: local, data: data, id: id, point: try roundTrip(point), partialSize: partial)
     }
@@ -152,16 +157,16 @@ struct ResumeIntegrationTests {
         let id = await queue.enqueue([local])[0]
         let events = await finish(queue)
 
-        #expect(events.contains(.succeeded(id: id, remotePath: "/drops/\(name)")))
+        #expect(events.contains(.succeeded(id: id, remotePath: "/ops/\(name)")))
         #expect(events.contains(.waitingForConnection(id: id)))
         #expect(!events.contains { if case .failed = $0 { true } else { false } })
-        #expect(serverFile("/drops/" + name) == data)
+        #expect(serverFile("/ops/" + name) == data)
         // The second try went on from what the server held instead of starting over, and under the same name.
         let offsets = board.offsets
         #expect(offsets.count == 2)
         #expect(offsets.first == 0)
         #expect((offsets.last ?? 0) > 0)
-        #expect(serverSize("/drops/" + name.replacingOccurrences(of: ".bin", with: "-1.bin")) == nil)
+        #expect(serverSize("/ops/" + name.replacingOccurrences(of: ".bin", with: "-1.bin")) == nil)
     }
 
     @Test(.enabled(if: ResumeIntegrationTests.enabled), arguments: [TransferProtocol.ftp, .sftp])
@@ -173,7 +178,7 @@ struct ResumeIntegrationTests {
         }
         // Part of it is on the server, and only part.
         #expect(cut.partialSize > 0 && cut.partialSize < cut.data.count)
-        #expect(cut.point.created && cut.point.remotePath == "/drops/\(cut.name)")
+        #expect(cut.point.created && cut.point.remotePath == "/ops/\(cut.name)")
 
         // A new queue, as after a relaunch, knowing only what was written down.
         let board = Switchboard()
@@ -181,8 +186,8 @@ struct ResumeIntegrationTests {
         await queue.resume(cut.id, from: cut.point)
         let events = await finish(queue)
 
-        #expect(events.last == .succeeded(id: cut.id, remotePath: "/drops/\(cut.name)"))
-        #expect(serverFile("/drops/" + cut.name) == cut.data)
+        #expect(events.last == .succeeded(id: cut.id, remotePath: "/ops/\(cut.name)"))
+        #expect(serverFile("/ops/" + cut.name) == cut.data)
         #expect(restarts(events).isEmpty)
         // It asked the server how much it had, and sent only the rest (SFTP starts a little early, to be sure).
         let offset = try #require(board.offsets.first)
@@ -192,7 +197,7 @@ struct ResumeIntegrationTests {
         }.first
         #expect((first ?? 0) >= offset - 524_288)
         // Never a numbered copy next to it, whatever the setting for names that are taken.
-        #expect(serverSize("/drops/" + cut.name.replacingOccurrences(of: ".bin", with: "-1.bin")) == nil)
+        #expect(serverSize("/ops/" + cut.name.replacingOccurrences(of: ".bin", with: "-1.bin")) == nil)
     }
 
     @Test(.enabled(if: ResumeIntegrationTests.enabled), arguments: [TransferProtocol.ftp, .sftp])
@@ -211,10 +216,10 @@ struct ResumeIntegrationTests {
         await queue.resume(cut.id, from: cut.point)
         let events = await finish(queue)
 
-        #expect(events.last == .succeeded(id: cut.id, remotePath: "/drops/\(cut.name)"))
+        #expect(events.last == .succeeded(id: cut.id, remotePath: "/ops/\(cut.name)"))
         #expect(restarts(events).count == 1)
         #expect(restarts(events).first?.contains("changed") == true)
-        #expect(serverFile("/drops/" + cut.name) == changed)
+        #expect(serverFile("/ops/" + cut.name) == changed)
         #expect(board.offsets == [0])
     }
 
@@ -225,16 +230,16 @@ struct ResumeIntegrationTests {
             try? FileManager.default.removeItem(at: cut.local)
             removeFromServer([cut.name, cut.name.replacingOccurrences(of: ".bin", with: "-1.bin")])
         }
-        try FileManager.default.removeItem(atPath: serverPath("/drops/" + cut.name))
+        try FileManager.default.removeItem(atPath: serverPath("/ops/" + cut.name))
 
         let board = Switchboard()
         let queue = makeQueue(config(transferProtocol), board, reconnect: giveUpAtOnce)
         await queue.resume(cut.id, from: cut.point)
         let events = await finish(queue)
 
-        #expect(events.last == .succeeded(id: cut.id, remotePath: "/drops/\(cut.name)"))
+        #expect(events.last == .succeeded(id: cut.id, remotePath: "/ops/\(cut.name)"))
         #expect(restarts(events).first?.contains("gone") == true)
-        #expect(serverFile("/drops/" + cut.name) == cut.data)
+        #expect(serverFile("/ops/" + cut.name) == cut.data)
         #expect(board.offsets == [0])
     }
 
@@ -248,17 +253,17 @@ struct ResumeIntegrationTests {
             removeFromServer([cut.name])
         }
         let bystander = uniqueName("txt")
-        try Data("not ours".utf8).write(to: URL(fileURLWithPath: serverPath("/drops/" + bystander)))
+        try Data("not ours".utf8).write(to: URL(fileURLWithPath: serverPath("/ops/" + bystander)))
         defer { removeFromServer([bystander]) }
-        #expect(serverSize("/drops/" + cut.name) != nil)
+        #expect(serverSize("/ops/" + cut.name) != nil)
 
         let queue = makeQueue(config(transferProtocol), Switchboard(), reconnect: giveUpAtOnce)
         let problem = await queue.discard(cut.point)
         _ = await finish(queue)
 
         #expect(problem == nil)
-        #expect(serverSize("/drops/" + cut.name) == nil)
-        #expect(serverFile("/drops/" + bystander) == Data("not ours".utf8))
+        #expect(serverSize("/ops/" + cut.name) == nil)
+        #expect(serverFile("/ops/" + bystander) == Data("not ours".utf8))
     }
 
     @Test(.enabled(if: ResumeIntegrationTests.enabled), arguments: [TransferProtocol.ftp, .sftp])
@@ -280,7 +285,7 @@ struct ResumeIntegrationTests {
         let id = await first.enqueue([local])[0]
         let earlier = await finish(first)
         let point = try roundTrip(#require(lastPoint(earlier, of: id)))
-        let settledBefore = try await settledSize("/drops/" + name)
+        let settledBefore = try await settledSize("/ops/" + name)
         let before = try #require(settledBefore)
         #expect(before > 0)
 
@@ -290,14 +295,14 @@ struct ResumeIntegrationTests {
         var size = before
         for _ in 0..<2000 where size <= before {
             try await Task.sleep(nanoseconds: 5_000_000)
-            size = serverSize("/drops/" + name) ?? 0
+            size = serverSize("/ops/" + name) ?? 0
         }
         #expect(size > before)
         await queue.cancel(id)
         let events = await finish(queue)
 
         #expect(events.contains(.cancelled(id: id)))
-        #expect(serverSize("/drops/" + name) == nil)
+        #expect(serverSize("/ops/" + name) == nil)
     }
 
     // MARK: The connection
@@ -318,8 +323,8 @@ struct ResumeIntegrationTests {
         let id = await queue.enqueue([local])[0]
         let events = await finish(queue)
 
-        #expect(events.last == .succeeded(id: id, remotePath: "/drops/\(name)"))
-        #expect(serverFile("/drops/" + name) == data)
+        #expect(events.last == .succeeded(id: id, remotePath: "/ops/\(name)"))
+        #expect(serverFile("/ops/" + name) == data)
         #expect(board.refusedConnections > 0)
     }
 
@@ -341,9 +346,9 @@ struct ResumeIntegrationTests {
 
         #expect(events.contains(.waitingForConnection(id: id)))
         #expect(isConnectionLost(events, id))
-        #expect(!events.contains(.succeeded(id: id, remotePath: "/drops/\(name)")))
+        #expect(!events.contains(.succeeded(id: id, remotePath: "/ops/\(name)")))
         // What was sent stays on the server, for the user to resume.
-        let settled = try await settledSize("/drops/" + name)
+        let settled = try await settledSize("/ops/" + name)
         let partial = try #require(settled)
         #expect(partial > 0 && partial < data.count)
 
@@ -353,8 +358,8 @@ struct ResumeIntegrationTests {
         await again.resume(id, from: point)
         let resumed = await finish(again)
 
-        #expect(resumed.last == .succeeded(id: id, remotePath: "/drops/\(name)"))
-        #expect(serverFile("/drops/" + name) == data)
+        #expect(resumed.last == .succeeded(id: id, remotePath: "/ops/\(name)"))
+        #expect(serverFile("/ops/" + name) == data)
     }
 
     @Test(.enabled(if: ResumeIntegrationTests.enabled), arguments: [TransferProtocol.ftp, .sftp])
@@ -368,15 +373,15 @@ struct ResumeIntegrationTests {
         }
         let board = Switchboard()
         board.cut(path: name, after: 2_000_000, thenDownFor: 3600)
-        // Plenty of tries, but only two seconds to use them in.
-        let queue = makeQueue(config(transferProtocol), board, reconnect: ReconnectPolicy(delays: Array(repeating: 0.4, count: 50), giveUpAfter: 2, noticeAfter: 1))
+        // Plenty of tries, but only a few seconds to use them in (counted from the last byte).
+        let queue = makeQueue(config(transferProtocol), board, reconnect: ReconnectPolicy(delays: Array(repeating: 0.5, count: 50), giveUpAfter: 6, noticeAfter: 3))
         let id = await queue.enqueue([local])[0]
         let started = Date()
         let events = await finish(queue)
 
         #expect(isConnectionLost(events, id))
-        #expect(Date().timeIntervalSince(started) < 10)
-        #expect(board.refusedConnections >= 2 && board.refusedConnections < 20)
+        #expect(Date().timeIntervalSince(started) < 60)
+        #expect(board.refusedConnections >= 3 && board.refusedConnections < 40)
     }
 
     @Test(.enabled(if: ResumeIntegrationTests.enabled), arguments: [TransferProtocol.ftp, .sftp])
@@ -425,11 +430,11 @@ struct ResumeIntegrationTests {
         #expect(isConnectionLost(cutOff, id))
         let point = try roundTrip(#require(lastPoint(cutOff, of: id)))
         #expect(point.isFolder && point.created)
-        #expect(point.remotePath == "/drops/\(name)")
+        #expect(point.remotePath == "/ops/\(name)")
         #expect(point.finishedFiles == 1)
         #expect(point.currentFile == "b/big.bin")
-        #expect(serverFile("/drops/\(name)/a.txt") == Data("first".utf8))
-        let settled = try await settledSize("/drops/\(name)/b/big.bin")
+        #expect(serverFile("/ops/\(name)/a.txt") == Data("first".utf8))
+        let settled = try await settledSize("/ops/\(name)/b/big.bin")
         let partial = try #require(settled)
         #expect(partial > 0 && partial < 6_000_000)
 
@@ -438,10 +443,10 @@ struct ResumeIntegrationTests {
         await second.resume(id, from: point)
         let events = await finish(second)
 
-        #expect(events.last == .succeeded(id: id, remotePath: "/drops/\(name)"))
-        for file in files { #expect(serverFile("/drops/\(name)/\(file.path)") == file.data, "\(file.path)") }
+        #expect(events.last == .succeeded(id: id, remotePath: "/ops/\(name)"))
+        for file in files { #expect(serverFile("/ops/\(name)/\(file.path)") == file.data, "\(file.path)") }
         // The folder is the same folder, not a numbered one, and the finished file was not sent again.
-        #expect(serverSize("/drops/\(name)-1") == nil)
+        #expect(serverSize("/ops/\(name)-1") == nil)
         #expect(!carried.uploaded.contains { $0.hasSuffix("/a.txt") })
         #expect(carried.uploaded.first?.hasSuffix("/b/big.bin") == true)
         #expect(carried.uploaded.contains { $0.hasSuffix("/d.txt") })

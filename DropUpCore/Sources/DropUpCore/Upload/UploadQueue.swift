@@ -385,6 +385,8 @@ public actor UploadQueue {
             while !Task.isCancelled {
                 let idle = run.idle
                 if idle >= policy.giveUpAfter {
+                    // A busy machine can wake this up late, past the notice: the row still says why before it fails.
+                    if !noticed { continuation.yield(.waitingForConnection(id: id)) }
                     run.markStalled()
                     task.cancel()
                     try? await Task.sleep(nanoseconds: UInt64(grace * 1_000_000_000))
@@ -588,6 +590,22 @@ public actor UploadQueue {
             try await Self.ensureFolder(root, session: session)
             if previous.fingerprint == fingerprint {
                 index = min(previous.finishedFiles, tree.files.count)
+                if index > 0 {
+                    // The files the note calls done have to still be there: a folder the user cleared out on the server
+                    // in the meantime starts over, instead of being finished without them.
+                    let last = tree.files[index - 1]
+                    run.touch()
+                    switch try await Self.look(at: Self.join(root, last.relativePath), session: session) {
+                    case .missing:
+                        index = 0
+                        continuation.yield(.restarted(id: job.id, reason: "Files already sent are gone from the server, so the folder starts over."))
+                    case .size(let size) where size != last.size:
+                        index = 0
+                        continuation.yield(.restarted(id: job.id, reason: "Files already sent have changed on the server, so the folder starts over."))
+                    default:
+                        break
+                    }
+                }
                 // Notes are made now and then, not after every file, so a few more may be done than the last one says.
                 // A file is done when the server holds as many bytes of it as it has; the one after is carried on from
                 // what it holds, if that is the file the last note was in the middle of.

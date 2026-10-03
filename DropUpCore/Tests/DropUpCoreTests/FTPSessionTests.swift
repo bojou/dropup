@@ -264,6 +264,23 @@ struct FTPSessionTests {
         #expect(server.file("/drops/big.bin").map { $0.count < 2_000_000 } ?? true)
     }
 
+    @Test(.timeLimit(.minutes(1)))
+    func closingTheSessionStopsATransferStuckOnTheDataConnection() async throws {
+        let temp = try TempFiles()
+        defer { temp.remove() }
+        let file = try temp.file(named: "big.bin", size: 2_000_000)
+        let server = FakeFTPServer()
+        server.stallsDataAfter = 300_000
+        let session = try await connect(server)
+        let task = Task { try await session.upload(fileURL: file, to: "/drops/big.bin") { _ in } }
+
+        // The server stops taking data and says nothing. Nothing in the transfer can notice that by itself.
+        while !server.dataConnectionIsStalled { try await Task.sleep(nanoseconds: 5_000_000) }
+        await session.close()
+
+        await #expect(throws: UploaderError.self) { try await task.value }
+    }
+
     // MARK: Carrying on a partly sent file
 
     @Test func carriesOnWhereTheServerStoppedWithREST() async throws {

@@ -8,6 +8,13 @@ public protocol ByteStream: Sendable {
     func receive(maxLength: Int) async throws -> Data
     /// Flushes pending data, sends end-of-stream and closes. Never throws.
     func close() async
+    /// Stops the stream at once, without flushing: a send or receive that is waiting fails, even on a connection whose
+    /// other end has gone quiet, where `close` would wait for data that is never taken. Never throws.
+    func abort()
+}
+
+extension ByteStream {
+    public func abort() {}
 }
 
 public protocol ByteStreamOpener: Sendable {
@@ -46,6 +53,8 @@ public actor FTPSession: ServerSession {
     private var pendingReplies: [FTPReply] = []
     private var epsvUnsupported = false
     private var isClosed = false
+    /// The newest data connection, so closing the session can stop a transfer that is stuck on it.
+    private var activeData: (any ByteStream)?
 
     private static let chunkSize = 256 * 1024
 
@@ -288,10 +297,14 @@ public actor FTPSession: ServerSession {
     public func close() async {
         guard !isClosed else { return }
         isClosed = true
-        _ = try? await withTimeout(seconds: 3) { [control] in
+        // A transfer stuck on a data connection whose server went quiet waits for the connection, not for this session,
+        // so the connection is what has to be stopped.
+        activeData?.abort()
+        let said = (try? await withTimeout(seconds: 3) { [control] in
             try await control.send(Data("QUIT\r\n".utf8))
-        }
-        await control.close()
+        }) != nil
+        // Closing politely waits for data to be taken; with a server that has gone quiet it never would.
+        if said { await control.close() } else { control.abort() }
     }
 
     // MARK: Control connection
@@ -332,7 +345,14 @@ public actor FTPSession: ServerSession {
         guard let endpoint else { throw UploaderError.connectionFailed("No passive mode.") }
         // Always reuse the control connection's host. Servers behind NAT often advertise
         // a private address in PASV replies that the client can't reach.
-        return try await opener.open(host: host, port: endpoint.port)
+        let stream = try await opener.open(host: host, port: endpoint.port)
+        guard !isClosed else {
+            // The session was closed while the connection was being made.
+            stream.abort()
+            throw UploaderError.connectionFailed("The connection was closed.")
+        }
+        activeData = stream
+        return stream
     }
 
     /// Rejects values that would let a file name inject extra FTP commands.

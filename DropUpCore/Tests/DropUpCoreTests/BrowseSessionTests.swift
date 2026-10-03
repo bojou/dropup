@@ -104,7 +104,8 @@ struct BrowseSessionTests {
     }
 
     @Test func aCancelledListingDropsTheUncertainConnection() async throws {
-        let session = FakeSession(entries: ["/": [docs]], listDelayMilliseconds: 300)
+        // Long enough that a busy machine can't let the listing finish before the cancel: the cancel cuts the wait short.
+        let session = FakeSession(entries: ["/": [docs]], listDelayMilliseconds: 10_000)
         let (browser, connector) = makeBrowser(session: session)
 
         let task = Task { try await browser.entries(atPath: "/") }
@@ -114,6 +115,7 @@ struct BrowseSessionTests {
         #expect(session.closeCount == 1)
 
         // The next listing starts over on a fresh connection.
+        session.setListDelay(milliseconds: 2)
         let entries = try await browser.entries(atPath: "/")
         #expect(entries == [docs])
         #expect(connector.connectionCount == 2)
