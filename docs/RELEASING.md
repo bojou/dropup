@@ -105,8 +105,10 @@ install a build with a new public key by hand.
 The workflow signs and notarizes the DMG first, then signs that final DMG for Sparkle (the private key only passes
 through that one step, and the signature is checked against the public key inside the app before it is published) and
 writes `appcast.xml` with the version, the download link, the signature and the commit titles since the previous
-release. Installed copies look once a day, or when someone clicks **Check Now**, and ask before installing. An update that
-is ready waits for running uploads and downloads to finish before DropUp restarts.
+release. Installed copies look once a day. A version found that way is announced by a blue dot on the menubar icon and an
+**Update available** row in the popover, and Sparkle's window (notes, install, skip or later) opens only from that row,
+because DropUp has no Dock icon for a window to come from. **Check Now** opens the window straight away. Nothing installs
+without a click, and an update that is ready waits for running uploads and downloads to finish before DropUp restarts.
 
 The first release that contains Sparkle has to be installed by hand like any other DMG. The release after it is the
 first one an installed copy can pick up: install the first one, wait for the next release, then choose

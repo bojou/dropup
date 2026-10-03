@@ -16,7 +16,7 @@ are built, and the secrets the maintainer adds to make them notarized, is in [do
 
 To have DropUp start when you log in, turn on **Open at login** in Settings → General.
 
-DropUp updates itself: once a day it looks for a newer release and asks before installing it. **Settings → General → Updates** has **Check Now**, and a switch to stop the daily check. An update waits for running uploads and downloads to finish before DropUp restarts. Setting this up for releases is described in [docs/RELEASING.md](docs/RELEASING.md).
+DropUp updates itself: once a day it looks for a newer release. When it finds one, the menubar icon gets a small blue dot and the popover shows an **Update available** row. Nothing pops up by itself; **Update…** opens a window with what changed and the choice to install, skip or wait. **Settings → General → Updates** has **Check Now**, which opens that window straight away, and a switch to stop the daily check. An update waits for running uploads and downloads to finish before DropUp restarts. Setting this up for releases is described in [docs/RELEASING.md](docs/RELEASING.md).
 
 ## Using it
 

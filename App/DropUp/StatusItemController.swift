@@ -14,6 +14,8 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
     private let onChooseFolder: () -> Void
     private let popover = NSPopover()
     private let badge = CALayer()
+    /// Blue dot in the same corner: a new version is waiting. A failed upload's red dot takes its place when both apply.
+    private let updateBadge = CALayer()
     private var clickAwayMonitor: Any?
     private var escapeMonitor: Any?
 
@@ -47,13 +49,20 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
             badge.cornerRadius = 3.5
             badge.isHidden = true
             button.layer?.addSublayer(badge)
+
+            updateBadge.backgroundColor = NSColor.systemBlue.cgColor
+            updateBadge.frame = badge.frame
+            updateBadge.cornerRadius = 3.5
+            updateBadge.isHidden = true
+            button.layer?.addSublayer(updateBadge)
         }
 
         let content = PopoverView(
             model: model,
             openSettings: { [weak self] in self?.openSettings() },
             openBrowse: { [weak self] in self?.openBrowse() },
-            openChooseFolder: { [weak self] in self?.openChooseFolder() }
+            openChooseFolder: { [weak self] in self?.openChooseFolder() },
+            openUpdate: { [weak self] in self?.openUpdate() }
         )
         let controller = NSHostingController(rootView: content)
         controller.sizingOptions = [.preferredContentSize]
@@ -90,10 +99,16 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
         button.appearsDisabled = false
         button.highlight(highlighted || popover.isShown)
         badge.isHidden = state != .failed
+        let newVersion = model.updates.availableVersion
+        updateBadge.isHidden = newVersion == nil || state == .failed
 
         switch state {
         case .idle:
-            button.toolTip = model.config == nil ? "Click to set up DropUp" : "Drop files here to upload"
+            if let newVersion {
+                button.toolTip = "DropUp \(newVersion) is available. Click to see it."
+            } else {
+                button.toolTip = model.config == nil ? "Click to set up DropUp" : "Drop files here to upload"
+            }
         case .uploading(let fraction):
             let active = model.activity.active
             let name = model.preferences.hideRecentNames ? "" : " \(active.first?.fileName ?? "")"
@@ -184,6 +199,11 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
     private func openChooseFolder() {
         popover.performClose(nil)
         onChooseFolder()
+    }
+
+    private func openUpdate() {
+        popover.performClose(nil)
+        model.updates.showAvailableUpdate()
     }
 
     func popoverDidClose(_ notification: Notification) {
