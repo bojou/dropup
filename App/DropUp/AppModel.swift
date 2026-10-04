@@ -48,6 +48,14 @@ final class AppModel {
     @ObservationIgnored private let queue: UploadQueue
     /// Looks for new versions of DropUp.
     @ObservationIgnored let updates = Updates()
+    /// The global keyboard shortcuts (Settings > Shortcuts). Made at the end of `init`, because it points back at the model.
+    @ObservationIgnored private(set) var shortcuts: ShortcutController!
+    /// Where an image or text from the clipboard waits as a file until its upload is done with it.
+    @ObservationIgnored private let staging = ClipboardStaging.standard()
+    /// Staged files handed to the queue whose row hasn't appeared yet, so nothing sweeps them away in between.
+    @ObservationIgnored private var stagedInFlight: Set<URL> = []
+    /// How many staged files were left by the last sweep. Starts at one, so the first sweep (at launch) looks.
+    @ObservationIgnored private var stagedLeft = 1
     @ObservationIgnored private var sourceURLs: [UUID: URL] = [:]
     /// Files dropped into the Browse window go to the folder it showed; a retry sends them there again.
     @ObservationIgnored private var destinations: [UUID: String] = [:]
@@ -88,6 +96,7 @@ final class AppModel {
             if let point = item.resume { uploadFolders[item.id] = point.directory ?? point.config?.remoteDirectory }
         }
         pruneRecent()
+        shortcuts = ShortcutController(model: self)
 
         Task { @MainActor [weak self, events = queue.events] in
             for await event in events {
@@ -139,7 +148,23 @@ final class AppModel {
                 destinations[id] = directory
                 uploadFolders[id] = folder
             }
+            // A file the queue didn't take will never have a row.
+            if ids.count < files.count {
+                stagedInFlight.subtract(files.dropFirst(ids.count))
+                sweepStaging()
+            }
         }
+    }
+
+    /// Uploads an image or some text from the clipboard: written to a file of its own first, since the queue sends
+    /// files, and kept until the upload is done with it (see `sweepStaging`). Returns false if it couldn't be written.
+    @discardableResult
+    func uploadStaged(name: String, data: Data) -> Bool {
+        guard !needsOnboarding, let url = try? staging.write(name: name, data: data) else { return false }
+        stagedLeft += 1
+        stagedInFlight.insert(url)
+        upload([url])
+        return true
     }
 
     func cancel(_ id: UUID) {
@@ -441,6 +466,28 @@ final class AppModel {
         destinations = destinations.filter { live.contains($0.key) }
         uploadFolders = uploadFolders.filter { live.contains($0.key) }
         removalProblems = removalProblems.filter { live.contains($0.key) }
+        sweepStaging()
+    }
+
+    /// Deletes the clipboard files nothing needs any more. One is needed while its upload can still run or be sent
+    /// again (waiting, uploading, failed, interrupted or paused) and until its row has appeared. Once the upload has
+    /// finished, been cancelled or been removed, the file goes. Runs whenever the list changes, so no timer is
+    /// involved, and at launch against the saved rows, which clears what a quit or a crash left behind.
+    private func sweepStaging() {
+        guard stagedLeft > 0 || !stagedInFlight.isEmpty else { return }
+        var needed = stagedInFlight
+        var shown: Set<URL> = []
+        for item in activity.items {
+            let sources = [sourceURLs[item.id], item.resume?.sourceURL].compactMap { $0 }
+            shown.formUnion(sources)
+            switch item.state {
+            case .waiting, .uploading, .failed, .interrupted, .paused: needed.formUnion(sources)
+            case .succeeded, .cancelled: break
+            }
+        }
+        // A row that refers to a file has taken over from the in-flight mark.
+        stagedInFlight.subtract(shown)
+        stagedLeft = staging.sweep(keeping: needed)
     }
 
     private func startTicker() {

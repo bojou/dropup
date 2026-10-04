@@ -6,4 +6,5 @@ xcuserdata/
 *.xcuserstate
 .swiftpm/
 App/DropUp/Info.plist
+App/DropUp/DropUp.entitlements
 __pycache__/

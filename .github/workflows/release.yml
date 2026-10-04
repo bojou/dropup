@@ -117,8 +117,18 @@ jobs:
             sign "$ITEM"
           done
           sign "$FRAMEWORK"
-          sign DropUp.app
+          # The app is the only part that carries entitlements (Quick Upload's permission to ask Finder).
+          ENTITLEMENTS="App/DropUp/DropUp.entitlements"
+          if [ ! -f "$ENTITLEMENTS" ]; then
+            echo "::error::$ENTITLEMENTS is missing, so Quick Upload could never ask Finder for the selection."
+            exit 1
+          fi
+          sign --entitlements "$ENTITLEMENTS" DropUp.app
           codesign --verify --deep --strict --verbose=2 DropUp.app
+          if ! codesign -d --entitlements - DropUp.app 2>/dev/null | grep -q "com.apple.security.automation.apple-events"; then
+            echo "::error::The signed app does not carry the Apple Events entitlement."
+            exit 1
+          fi
 
       # Catches a build that is signed but won't start, before it is notarized and published.
       - name: Check the signed app starts

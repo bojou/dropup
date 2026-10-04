@@ -31,6 +31,8 @@ targets:
         LSUIElement: true # starts menubar-only; WindowCoordinator adds a Dock icon while a window is open
         LSApplicationCategoryType: public.app-category.utilities
         NSHumanReadableCopyright: ""
+        # Quick Upload asks Finder which files are selected. macOS shows this text in its permission prompt.
+        NSAppleEventsUsageDescription: DropUp reads which files are selected in Finder when you press the Quick Upload shortcut, so it can upload them.
         # Updates (Sparkle). The feed is the appcast attached to the latest release; the release workflow builds and
         # signs it. SUPublicEDKey is the public half of the key whose private half is the SPARKLE_PRIVATE_KEY secret.
         SUFeedURL: https://github.com/bojou/dropup/releases/latest/download/appcast.xml
@@ -38,6 +40,11 @@ targets:
         SUEnableAutomaticChecks: true # on until the user turns it off in Settings, without Sparkle's own permission prompt
         SUAllowsAutomaticUpdates: false # the user always decides when to install
         SUScheduledCheckInterval: 86400
+    # Needed with the hardened runtime for Quick Upload to be allowed to ask Finder. The release workflow signs with this file.
+    entitlements:
+      path: App/DropUp/DropUp.entitlements
+      properties:
+        com.apple.security.automation.apple-events: true
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: app.dropup.DropUp
