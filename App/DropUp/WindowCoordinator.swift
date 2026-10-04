@@ -101,7 +101,9 @@ final class WindowCoordinator: NSObject, NSWindowDelegate {
     }
 
     private static func raise(_ window: NSWindow) {
-        NSApp.activate()
+        // Deprecated since macOS 14, but the plain `activate()` is only a request that macOS can ignore, and for an app
+        // without a Dock icon it often does. This form takes the keyboard.
+        NSApp.activate(ignoringOtherApps: true)
         window.makeKeyAndOrderFront(nil)
         // Puts the window in front even when macOS has not made DropUp the active app yet.
         window.orderFrontRegardless()
