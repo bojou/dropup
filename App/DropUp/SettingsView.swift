@@ -54,7 +54,7 @@ struct SettingsView: View {
     }
 }
 
-private struct ConnectionSettings: View {
+struct ConnectionSettings: View {
     let model: AppModel
     let close: () -> Void
     @State private var draft = ServerDraft()

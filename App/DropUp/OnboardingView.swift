@@ -8,7 +8,14 @@ struct OnboardingView: View {
 
     @State private var step = OnboardingStep.welcome
     @State private var draft = ServerDraft()
-    @State private var tester = ConnectionTester()
+    @State var tester = ConnectionTester()
+
+    init(model: AppModel, probeStep: OnboardingStep = .welcome, probeDraft: ServerDraft = ServerDraft(), onFinish: @escaping () -> Void) {
+        self.model = model
+        self.onFinish = onFinish
+        _step = State(initialValue: probeStep)
+        _draft = State(initialValue: probeDraft)
+    }
     @State private var folders = FolderBrowserModel()
     @State private var openAtLogin = true
     @State private var saveError: String?
@@ -103,6 +110,8 @@ struct OnboardingView: View {
         .buttonStyle(.plain)
         .accessibilityAddTraits(selected ? .isSelected : [])
     }
+
+    var probeContent: some View { serverDetails.padding(.horizontal, 48).frame(width: 600) }
 
     private var serverDetails: some View {
         VStack(alignment: .leading, spacing: 14) {

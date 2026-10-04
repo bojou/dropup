@@ -38,6 +38,8 @@ final class ConnectionTester {
         }
     }
 
+    func probeFail(_ message: String) { state = .failure(message) }
+
     /// Call when the form changes: an old result no longer describes what's typed.
     func reset() {
         task?.cancel()

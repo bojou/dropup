@@ -1,0 +1,27 @@
+name: Probe
+
+on:
+  push:
+    branches: [ssh-key-probe]
+
+jobs:
+  probe:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Generate Xcode project
+        run: |
+          brew install xcodegen
+          xcodegen generate
+      - name: Build app
+        run: xcodebuild -project DropUp.xcodeproj -scheme DropUp -configuration Release -destination 'platform=macOS' -derivedDataPath build CODE_SIGNING_ALLOWED=NO build
+      - name: Render the forms
+        run: |
+          DROPUP_PROBE_LAYOUT=1 build/Build/Products/Release/DropUp.app/Contents/MacOS/DropUp > probe.log 2>&1 || true
+          echo "=== PROBE RESULTS ==="
+          grep "^PROBE" probe.log | cut -c1-200 | grep -v "PROBE-PNG" || true
+          grep -c "PROBE-PNG" probe.log || true
+          grep "PROBE-PNG" probe.log | awk '{print $2, length($3)}'
+          echo "=== PNG BEGIN ==="
+          grep "PROBE-PNG" probe.log
+          echo "=== PNG END ==="
