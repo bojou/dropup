@@ -73,9 +73,21 @@ struct KeyLoginIntegrationTests {
         return url
     }
 
+    /// Random-looking bytes that are cheap to make: one random block of an odd length, repeated. A chunk that is dropped,
+    /// repeated or moved by anything but exactly that length changes the content. (Making every byte random takes
+    /// seconds in a debug build, and the tests run side by side on a few cores.)
     private func randomData(_ count: Int) -> Data {
-        var generator = SystemRandomNumberGenerator()
-        return Data((0..<count).map { _ in UInt8.random(in: 0...255, using: &generator) })
+        let blockSize = min(count, 1_000_003)
+        var block = Data(count: blockSize)
+        block.withUnsafeMutableBytes { buffer in
+            var generator = SystemRandomNumberGenerator()
+            for offset in stride(from: 0, to: blockSize - 7, by: 8) {
+                buffer.storeBytes(of: UInt64.random(in: .min ... .max, using: &generator), toByteOffset: offset, as: UInt64.self)
+            }
+        }
+        var data = Data(capacity: count)
+        while data.count < count { data.append(block.prefix(count - data.count)) }
+        return data
     }
 
     /// What testing the connection says when it fails, as the settings screen shows it.
