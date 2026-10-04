@@ -10,12 +10,15 @@ struct SettingsView: View {
     /// Closes the Settings window.
     let close: () -> Void
     @State private var tab = Tab.general
+    /// The tabs that have been shown. A tab is built the first time it is opened and kept from then on, so opening
+    /// Settings builds only the one that shows, and unsaved edits on Connection still survive a peek at the others.
+    @State private var visited: Set<Tab> = [.general]
 
     private enum Tab { case connection, general, shortcuts }
 
     var body: some View {
         VStack(spacing: 0) {
-            Picker("", selection: $tab) {
+            Picker("", selection: Binding(get: { tab }, set: { tab = $0; visited.insert($0) })) {
                 Text("Connection").tag(Tab.connection)
                 Text("General").tag(Tab.general)
                 Text("Shortcuts").tag(Tab.shortcuts)
@@ -25,20 +28,26 @@ struct SettingsView: View {
             .frame(width: 330)
             .padding(.vertical, 14)
             Divider()
-            // All tabs stay alive so unsaved edits on Connection survive a peek at the others.
+            // A tab stays alive once it has been shown, so unsaved edits on Connection survive a peek at the others.
             ZStack {
-                ConnectionSettings(model: model, close: close)
-                    .opacity(tab == .connection ? 1 : 0)
-                    .disabled(tab != .connection)
-                    .accessibilityHidden(tab != .connection)
-                GeneralSettings(model: model, close: close)
-                    .opacity(tab == .general ? 1 : 0)
-                    .disabled(tab != .general)
-                    .accessibilityHidden(tab != .general)
-                ShortcutsSettings(model: model, close: close)
-                    .opacity(tab == .shortcuts ? 1 : 0)
-                    .disabled(tab != .shortcuts)
-                    .accessibilityHidden(tab != .shortcuts)
+                if visited.contains(.connection) {
+                    ConnectionSettings(model: model, close: close)
+                        .opacity(tab == .connection ? 1 : 0)
+                        .disabled(tab != .connection)
+                        .accessibilityHidden(tab != .connection)
+                }
+                if visited.contains(.general) {
+                    GeneralSettings(model: model, close: close)
+                        .opacity(tab == .general ? 1 : 0)
+                        .disabled(tab != .general)
+                        .accessibilityHidden(tab != .general)
+                }
+                if visited.contains(.shortcuts) {
+                    ShortcutsSettings(model: model, close: close)
+                        .opacity(tab == .shortcuts ? 1 : 0)
+                        .disabled(tab != .shortcuts)
+                        .accessibilityHidden(tab != .shortcuts)
+                }
             }
         }
         .frame(width: Self.size.width, height: Self.size.height)
@@ -219,7 +228,9 @@ private struct ConnectionSettings: View {
 private struct GeneralSettings: View {
     let model: AppModel
     let close: () -> Void
-    @State private var openAtLogin = LaunchAtLogin.isEnabled
+    /// Whether DropUp opens at login. Nil until it has been looked up: asking the system takes a moment, so it is
+    /// done after the window is up and not while it is being built.
+    @State private var openAtLogin: Bool?
     @State private var loginError: String?
 
     var body: some View {
@@ -244,7 +255,7 @@ private struct GeneralSettings: View {
         Form {
             Section("Startup") {
                 Toggle("Open DropUp at login", isOn: Binding(
-                    get: { openAtLogin },
+                    get: { openAtLogin ?? false },
                     set: { newValue in
                         do {
                             try LaunchAtLogin.set(newValue)
@@ -255,6 +266,7 @@ private struct GeneralSettings: View {
                         openAtLogin = LaunchAtLogin.isEnabled
                     }
                 ))
+                .disabled(openAtLogin == nil)
                 if let loginError { Text(loginError).font(.callout).foregroundStyle(.red) }
             }
             Section {
@@ -286,7 +298,7 @@ private struct GeneralSettings: View {
             }
         }
         .formStyle(.grouped)
-        .onAppear { openAtLogin = LaunchAtLogin.isEnabled }
+        .task { openAtLogin = await Task.detached { LaunchAtLogin.isEnabled }.value }
     }
 
     /// How the popover's Recent list is kept. Every row is always shown: with the list off, the ones that only matter
