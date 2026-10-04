@@ -12,7 +12,8 @@ struct SystemClipboard: ClipboardReading {
     /// Files and folders copied in Finder.
     func fileURLs() -> [URL] {
         let urls = board.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL] ?? []
-        return urls.map { $0.filePathURL ?? $0 }
+        // A file reference (file:///.file/id=...) as the path it stands for.
+        return urls.map { ($0 as NSURL).filePathURL ?? $0 }
     }
 
     /// A picture copied from a screenshot, an app or a web page, as PNG.
