@@ -18,6 +18,13 @@ final class WindowCoordinator: NSObject, NSWindowDelegate {
     private var chooseWindow: NSWindow?
     private var chooseModel: BrowseModel?
 
+    #if DEBUG
+    /// For WindowOrderSelfTest: the windows that are open, by name.
+    var windowsForSelfTest: [String: NSWindow?] {
+        ["onboarding": onboardingWindow, "settings": settingsWindow, "browse": browseWindow, "choose": chooseWindow]
+    }
+    #endif
+
     init(model: AppModel) {
         self.model = model
         super.init()

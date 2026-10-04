@@ -192,6 +192,19 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
         statusItem.menu = nil
     }
 
+    #if DEBUG
+    /// For WindowOrderSelfTest: clicking a tile in the popover.
+    func selfTestChoose(_ name: String) {
+        switch name {
+        case "settings": openSettings()
+        case "browse": openBrowse()
+        default: openChooseFolder()
+        }
+    }
+
+    var popoverWindowForSelfTest: NSWindow? { popover.contentViewController?.view.window }
+    #endif
+
     private func openSettings() {
         popover.performClose(nil)
         onOpenSettings()

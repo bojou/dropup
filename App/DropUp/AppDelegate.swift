@@ -30,6 +30,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             windows.showOnboarding()
         }
         model.shortcuts.start()
+        #if DEBUG
+        // CI's test of the windows (WindowOrderSelfTest.swift).
+        if let helper = ProcessInfo.processInfo.environment["DROPUP_WINDOW_TEST"] {
+            Task { @MainActor in exit(await WindowOrderSelfTest.run(helper: helper, model: model, windows: windows, status: statusItem)) }
+        }
+        #endif
     }
 
     func showSettings() {
