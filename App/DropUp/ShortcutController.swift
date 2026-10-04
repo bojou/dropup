@@ -15,9 +15,6 @@ final class ShortcutController {
     /// Whether macOS lets DropUp read the Finder selection. Only looked up while Quick Upload is on.
     private(set) var finderAccess = AutomationAccess.unknown
 
-    /// Whether the recorder in Settings is waiting for a key.
-    @ObservationIgnored private(set) var isRecording = false
-
     @ObservationIgnored private unowned let model: AppModel
     @ObservationIgnored private let coordinator: ShortcutCoordinator
 
@@ -61,12 +58,10 @@ final class ShortcutController {
 
     /// While the recorder listens, pressing a shortcut records it instead of running it.
     func beginRecording() {
-        isRecording = true
         coordinator.pause()
     }
 
     func endRecording() {
-        isRecording = false
         coordinator.resume()
         failures = coordinator.failures
     }
