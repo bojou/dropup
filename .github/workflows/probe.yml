@@ -1,0 +1,29 @@
+name: Probe
+
+on:
+  push:
+    branches: [menubar-only]
+    paths: [.github/workflows/probe.yml]
+
+jobs:
+  probe:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Generate Xcode project
+        run: |
+          brew install xcodegen
+          xcodegen generate
+      - name: Build app
+        run: xcodebuild -project DropUp.xcodeproj -scheme DropUp -configuration Release -destination 'platform=macOS' -derivedDataPath build CODE_SIGNING_ALLOWED=NO build
+      - name: With EditKeys
+        run: |
+          DROPUP_PROBE_MENUBAR=1 build/Build/Products/Release/DropUp.app/Contents/MacOS/DropUp > probe.log 2>&1 || true
+          echo "=== PROBE RESULTS (EditKeys on) ==="
+          grep PROBE probe.log || tail -30 probe.log
+      - name: Without EditKeys
+        run: |
+          defaults delete app.dropup.DropUp 2>/dev/null || true
+          DROPUP_PROBE_MENUBAR=1 DROPUP_PROBE_NO_EDITKEYS=1 build/Build/Products/Release/DropUp.app/Contents/MacOS/DropUp > probe2.log 2>&1 || true
+          echo "=== PROBE RESULTS (EditKeys off) ==="
+          grep PROBE probe2.log || tail -30 probe2.log

@@ -33,8 +33,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         model.shortcuts.start()
 
         let editKeys = EditKeys { [weak self] in self?.model.shortcuts.isRecording ?? false }
-        editKeys.start()
+        if ProcessInfo.processInfo.environment["DROPUP_PROBE_NO_EDITKEYS"] == nil { editKeys.start() }
         self.editKeys = editKeys
+        if ProcessInfo.processInfo.environment["DROPUP_PROBE_MENUBAR"] != nil {
+            Task { @MainActor in
+                await MenubarProbe.run(statusItem: statusItem)
+                exit(0)
+            }
+        }
     }
 
     func showSettings() {
