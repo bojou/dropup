@@ -7,6 +7,9 @@ public protocol SettingsStore: Sendable {
     func clearServerConfig()
     func loadPreferences() -> Preferences
     func savePreferences(_ preferences: Preferences) throws
+    /// The credential keys of servers replaced in Settings whose Keychain password is still kept (see `RetiredPasswords`).
+    func loadRetiredServerKeys() -> Set<String>
+    func saveRetiredServerKeys(_ keys: Set<String>)
 }
 
 /// App behavior settings from the General tab. Everything has a sensible default.
@@ -108,11 +111,18 @@ public final class UserDefaultsSettingsStore: SettingsStore, @unchecked Sendable
     private let key: String
 
     private let preferencesKey: String
+    private let retiredKeysKey: String
 
-    public init(defaults: UserDefaults = .standard, key: String = "serverConfig", preferencesKey: String = "preferences") {
+    public init(
+        defaults: UserDefaults = .standard,
+        key: String = "serverConfig",
+        preferencesKey: String = "preferences",
+        retiredKeysKey: String = "retiredServerKeys"
+    ) {
         self.defaults = defaults
         self.key = key
         self.preferencesKey = preferencesKey
+        self.retiredKeysKey = retiredKeysKey
     }
 
     public func loadServerConfig() -> ServerConfig? {
@@ -138,5 +148,17 @@ public final class UserDefaultsSettingsStore: SettingsStore, @unchecked Sendable
 
     public func savePreferences(_ preferences: Preferences) throws {
         defaults.set(try JSONEncoder().encode(preferences), forKey: preferencesKey)
+    }
+
+    public func loadRetiredServerKeys() -> Set<String> {
+        Set(defaults.stringArray(forKey: retiredKeysKey) ?? [])
+    }
+
+    public func saveRetiredServerKeys(_ keys: Set<String>) {
+        if keys.isEmpty {
+            defaults.removeObject(forKey: retiredKeysKey)
+        } else {
+            defaults.set(keys.sorted(), forKey: retiredKeysKey)
+        }
     }
 }

@@ -61,6 +61,9 @@ final class AppModel {
     @ObservationIgnored private var destinations: [UUID: String] = [:]
     /// The folder each listed upload went to, so its error message can still be cleaned after the upload folder changes.
     @ObservationIgnored private var uploadFolders: [UUID: String] = [:]
+    /// Servers replaced in Settings whose Keychain password is kept for as long as an upload that went to them can still
+    /// run (see `RetiredPasswords`). Kept in the settings, so it survives a quit.
+    @ObservationIgnored private var retiredPasswords = RetiredPasswords()
     /// Called with the remote path of each file that finishes uploading. The Browse window uses it to refresh.
     @ObservationIgnored var onUploadSucceeded: ((String) -> Void)?
     @ObservationIgnored private var ticker: Task<Void, Never>?
@@ -87,6 +90,7 @@ final class AppModel {
         self.queue = UploadQueue(settings: settings, credentials: credentials, connectors: connectors)
         self.config = settings.loadServerConfig()
         self.preferences = settings.loadPreferences()
+        self.retiredPasswords = RetiredPasswords(keys: settings.loadRetiredServerKeys())
         // What the settings keep: finished uploads only when the list survives a quit, and interrupted ones for as long
         // as the list is on at all. They are what is left of a transfer, and the way to carry it on.
         let keepsInterrupted = preferences.recentLimit > 0
@@ -132,17 +136,23 @@ final class AppModel {
 
     // MARK: Uploading
 
-    /// - Parameter directory: a folder on the server to upload into instead of the saved upload folder.
-    func upload(_ fileURLs: [URL], toDirectory directory: String? = nil) {
+    /// Each upload belongs to the server (and upload folder) that is saved at the moment it is dropped, and keeps it
+    /// until it is done, whatever is saved in Settings by the time its turn comes.
+    /// - Parameters:
+    ///   - directory: a folder on the server to upload into instead of the saved upload folder.
+    ///   - server: the server to send to, for a retry of an upload that went to an earlier one. Nil is the saved server.
+    func upload(_ fileURLs: [URL], toDirectory directory: String? = nil, to server: ServerConfig? = nil) {
         let files = fileURLs.filter(\.isFileURL)
         guard !files.isEmpty else { return }
         if needsOnboarding {
             onNeedsOnboarding?()
             return
         }
+        // Read now, not when the task runs: a save in between must not move the drop to the other server.
+        let target = server ?? config
         Task {
-            let folder = directory ?? config?.remoteDirectory
-            let ids = await queue.enqueue(files, toDirectory: directory)
+            let folder = directory ?? target?.remoteDirectory
+            let ids = await queue.enqueue(files, toDirectory: directory, config: target)
             for (id, url) in zip(ids, files) {
                 sourceURLs[id] = url
                 destinations[id] = directory
@@ -217,12 +227,14 @@ final class AppModel {
         }
         guard let url = sourceURLs[id] ?? row(id)?.resume?.sourceURL else { return }
         let directory = destinations[id] ?? row(id)?.resume?.directory
+        // Starting over goes to the server it was dropped for, not to whichever is saved now.
+        let server = row(id)?.resume?.config
         activity.remove(id)
         sourceURLs[id] = nil
         destinations[id] = nil
         uploadFolders[id] = nil
         persistRecent()
-        upload([url], toDirectory: directory)
+        upload([url], toDirectory: directory, to: server)
     }
 
     /// Takes one finished upload out of the Recent list. An interrupted one is cancelled by this: the half-sent file
@@ -302,14 +314,15 @@ final class AppModel {
         (try? credentials.password(for: config.credentialKey)) ?? ""
     }
 
-    /// Saves both halves of the setup: the config to UserDefaults and the password to the Keychain.
+    /// Saves both halves of the setup: the config to UserDefaults and the password to the Keychain. The password of the
+    /// server it replaces stays in the Keychain while an upload that went there can still run (see `RetiredPasswords`).
     func save(_ config: ServerConfig, password: String) throws {
-        if let previous = settings.loadServerConfig(), previous.credentialKey != config.credentialKey {
-            try? credentials.removePassword(for: previous.credentialKey)
-        }
         try credentials.setPassword(password, for: config.credentialKey)
+        let previous = settings.loadServerConfig()
         try settings.saveServerConfig(config)
         self.config = config
+        retiredPasswords.retire(previous, replacedBy: config)
+        settleRetiredPasswords(save: true)
     }
 
     /// Points future uploads at another folder on the same server. Only the folder is saved; the password stays as it is.
@@ -467,6 +480,15 @@ final class AppModel {
         uploadFolders = uploadFolders.filter { live.contains($0.key) }
         removalProblems = removalProblems.filter { live.contains($0.key) }
         sweepStaging()
+        settleRetiredPasswords()
+    }
+
+    /// Deletes the Keychain passwords of replaced servers that no upload able to run again goes to. Runs whenever the
+    /// list changes, so no timer is involved, and at launch against the saved rows.
+    /// - Parameter save: writes the list down even if settling left it as it was, for when a server was just added to it.
+    private func settleRetiredPasswords(save: Bool = false) {
+        let changed = retiredPasswords.settle(current: config, items: activity.items, credentials: credentials)
+        if changed || save { settings.saveRetiredServerKeys(retiredPasswords.keys) }
     }
 
     /// Deletes the clipboard files nothing needs any more. One is needed while its upload can still run or be sent
@@ -480,10 +502,7 @@ final class AppModel {
         for item in activity.items {
             let sources = [sourceURLs[item.id], item.resume?.sourceURL].compactMap { $0 }
             shown.formUnion(sources)
-            switch item.state {
-            case .waiting, .uploading, .failed, .interrupted, .paused: needed.formUnion(sources)
-            case .succeeded, .cancelled: break
-            }
+            if item.canRunAgain { needed.formUnion(sources) }
         }
         // A row that refers to a file has taken over from the in-flight mark.
         stagedInFlight.subtract(shown)

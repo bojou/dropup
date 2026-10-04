@@ -10,7 +10,8 @@ public struct ResumePoint: Codable, Equatable, Sendable {
     public var isFolder: Bool
     /// The folder a drop in Browse sent it to. Nil for the saved upload folder.
     public var directory: String?
-    /// The server it was going to, with the login but not the password. Nil until the upload started.
+    /// The server it was going to, with the login but not the password. It is the one saved when the upload was
+    /// dropped, and the upload keeps it. Nil only for a row saved by a version before that.
     public var config: ServerConfig?
     /// Where it went on the server, under the name it ended up with (`photo-1.png`, say): the file, or the folder.
     public var remotePath: String?

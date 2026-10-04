@@ -89,6 +89,8 @@ public actor UploadQueue {
         let scan: Task<LocalTree, any Error>?
         /// What an interrupted upload had got to, when this job carries it on.
         let resume: ResumePoint?
+        /// The server it was dropped for, which it keeps whatever is saved in Settings by the time its turn comes.
+        let config: ServerConfig?
     }
 
     private struct OpenSession {
@@ -135,9 +137,17 @@ public actor UploadQueue {
     }
 
     /// Adds files to the end of the queue and returns their ids, in order.
-    /// - Parameter remoteDirectory: a folder on the same server to upload into instead of the saved upload folder.
+    ///
+    /// Each upload keeps the server (and upload folder) that was saved when it was dropped, for as long as it lives:
+    /// waiting, running, retried or resumed, even after a restart. Switching to another server in Settings only
+    /// decides where the next drops go.
+    /// - Parameters:
+    ///   - remoteDirectory: a folder on the same server to upload into instead of the saved upload folder.
+    ///   - config: the server to send to, for an upload that was dropped for a server other than the saved one (a retry
+    ///     of an upload that went to an earlier server). Nil takes the one saved now.
     @discardableResult
-    public func enqueue(_ fileURLs: [URL], toDirectory remoteDirectory: String? = nil) -> [UUID] {
+    public func enqueue(_ fileURLs: [URL], toDirectory remoteDirectory: String? = nil, config: ServerConfig? = nil) -> [UUID] {
+        let server = config ?? settings.loadServerConfig()
         var ids: [UUID] = []
         for url in fileURLs {
             let id = UUID()
@@ -154,8 +164,8 @@ public actor UploadQueue {
                 continuation.yield(.queued(id: id, fileName: name, totalBytes: size))
             }
             // Even before it starts, a waiting upload is something to pick up again if DropUp quits.
-            continuation.yield(.resumable(id: id, ResumePoint(sourcePath: url.path, isFolder: folder, directory: remoteDirectory, totalBytes: size)))
-            pending.append(Job(id: id, fileURL: url, remoteDirectory: remoteDirectory, scan: scan, resume: nil))
+            continuation.yield(.resumable(id: id, ResumePoint(sourcePath: url.path, isFolder: folder, directory: remoteDirectory, config: server, totalBytes: size)))
+            pending.append(Job(id: id, fileURL: url, remoteDirectory: remoteDirectory, scan: scan, resume: nil, config: server))
         }
         if worker == nil, !pending.isEmpty {
             worker = Task { await self.drain() }
@@ -173,7 +183,7 @@ public actor UploadQueue {
         continuation.yield(.queued(id: id, fileName: point.fileName, totalBytes: point.totalBytes))
         continuation.yield(.resumable(id: id, point))
         let scan = point.isFolder ? Self.readFolder(url, id: id, continuation: continuation) : nil
-        pending.append(Job(id: id, fileURL: url, remoteDirectory: point.directory, scan: scan, resume: point))
+        pending.append(Job(id: id, fileURL: url, remoteDirectory: point.directory, scan: scan, resume: point, config: point.config))
         if worker == nil {
             worker = Task { await self.drain() }
         }
@@ -474,7 +484,7 @@ public actor UploadQueue {
     private func transfer(_ job: Job, written: WrittenFile, run: UploadRun) async throws -> String {
         // An upload carried on from an earlier attempt or launch goes to the server and the name it used before.
         let earlier = run.point ?? job.resume
-        guard let config = earlier?.config ?? settings.loadServerConfig(), config.isValid else {
+        guard let config = earlier?.config ?? job.config ?? settings.loadServerConfig(), config.isValid else {
             throw UploadFailure.notConfigured
         }
         guard fileManager.fileExists(atPath: job.fileURL.path),
@@ -493,7 +503,7 @@ public actor UploadQueue {
 
         let session = try await session(for: config, password: password)
         run.markContact()
-        // Only the target folder changes. The session is still matched on the saved config, so it is reused.
+        // Only the target folder changes. The session is matched on the upload's own config, so it is reused.
         let target = job.remoteDirectory.map(config.withRemoteDirectory) ?? config
         if isFolder(job.fileURL) {
             return try await transferFolder(job, earlier: earlier, to: target, config: config, password: password, session: session, written: written, run: run)

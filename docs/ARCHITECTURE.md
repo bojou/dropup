@@ -79,7 +79,13 @@ Three actions (Quick Upload, Upload from Clipboard, Upload Latest Screenshot) ca
 
 ## Credentials
 
-Only the password is secret. It is stored in the Keychain as a generic password, keyed by `ServerConfig.credentialKey` (`protocol://user@host:port`). Everything else is JSON in `UserDefaults`. When the server identity changes in Settings, the old Keychain item is removed.
+Only the password is secret. It is stored in the Keychain as a generic password, keyed by `ServerConfig.credentialKey` (`protocol://user@host:port`). Everything else is JSON in `UserDefaults`.
+
+**One server per upload.** An upload belongs to the server (and upload folder) that is saved at the moment it is dropped. `AppModel.upload` reads the saved `ServerConfig` right then and hands it to `UploadQueue.enqueue(_:toDirectory:config:)`, which keeps it in the job and in the first `.resumable` point it reports (before the upload has connected). `transfer` takes the server from the point of an earlier attempt, else from the job, and only for a row saved by a version before this (no config in its point) from what is saved now. So a waiting upload, a running one that has to reconnect, a retry, a resume (also after a relaunch) and the cleanup after a cancel all go to the server the upload was dropped for, and changing the server or the upload folder in Settings, or with Change Folder, only decides where the next drops go. A retry of a failed upload that sent nothing starts over on its own server too (`enqueue(..., config:)` with the row's point). The queue reuses its open connection only while the next upload's config is the same, so uploads for two servers just reconnect between them.
+
+**Old passwords.** The password of a server that was replaced stays in the Keychain while an upload that went there can still run, because resuming it, retrying it or removing it (the half-sent file is deleted over a login) needs it. `RetiredPasswords` keeps the credential keys of replaced servers (saved in `UserDefaults` as `retiredServerKeys`, so they survive a quit) and `settle` deletes a key's password once no listed upload that `canRunAgain` (waiting, uploading, failed, interrupted or paused) has it in its point. A server that is saved again is no longer retired and its password stays. `AppModel` settles when a server is saved and whenever the Recent list changes (no timer), which includes the launch against the saved rows; so a switch with nothing in flight removes the old password at once, as before. The fresh-install wipe removes everything anyway.
+
+**The form.** `ServerDraft` keeps what was typed for each connection type while the form is open: switching SFTP and FTP shows each type's own host, port, username, password, folder and display name, a type that was never shown starts empty with its usual port, and nothing is carried from one to the other. Settings opens on General.
 
 ## Testing
 

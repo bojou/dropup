@@ -9,7 +9,7 @@ struct SettingsView: View {
     let model: AppModel
     /// Closes the Settings window.
     let close: () -> Void
-    @State private var tab = Tab.connection
+    @State private var tab = Tab.general
 
     private enum Tab { case connection, general, shortcuts }
 

@@ -763,7 +763,7 @@ struct BrowseView: View {
         .padding(.vertical, 10)
     }
 
-    /// Saves the folder on screen as the upload folder. It applies from the next upload; uploads already running finish where they were going.
+    /// Saves the folder on screen as the upload folder. It applies from the next upload; uploads already dropped, running or waiting, finish where they were going.
     private func useThisFolder() {
         guard model.config?.credentialKey == browse.credentialKey else {
             browse.report("The server was changed in Settings. Close this window and open Change Folder again.")

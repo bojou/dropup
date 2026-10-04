@@ -179,6 +179,39 @@ struct UploadActivityTests {
         #expect(activity.items.map(\.fileName) == ["running"])
     }
 
+    @Test func anUploadCanRunAgainUntilItHasFinishedOrBeenCancelled() throws {
+        var activity = UploadActivity()
+        let waiting = queue(&activity, "waiting", bytes: 1, at: t0)
+        let running = queue(&activity, "running", bytes: 1, at: t0)
+        let failed = queue(&activity, "failed", bytes: 1, at: t0)
+        let paused = queue(&activity, "paused", bytes: 1, at: t0)
+        let done = queue(&activity, "done", bytes: 1, at: t0)
+        let cancelled = queue(&activity, "cancelled", bytes: 1, at: t0)
+        activity.apply(.started(id: running), now: t0)
+        activity.apply(.failed(id: failed, .transfer("Connection lost")), now: t0)
+        activity.apply(.paused(id: paused), now: t0)
+        activity.apply(.succeeded(id: done, remotePath: "/done"), now: t0)
+        activity.apply(.cancelled(id: cancelled), now: t0)
+        // Left over from a quit, restored after the relaunch.
+        activity.restore([StoredUpload(
+            fileName: "interrupted", totalBytes: 10, outcome: .interrupted, detail: "", finishedAt: t0,
+            resume: ResumePoint(sourcePath: "/tmp/interrupted", isFolder: false, totalBytes: 10)
+        )])
+        let interrupted = try #require(activity.items.first { $0.fileName == "interrupted" })
+
+        func canRunAgain(_ id: UUID) throws -> Bool {
+            try #require(activity.items.first { $0.id == id }).canRunAgain
+        }
+        #expect(try canRunAgain(waiting))
+        #expect(try canRunAgain(running))
+        #expect(try canRunAgain(failed))
+        #expect(try canRunAgain(paused))
+        #expect(try !canRunAgain(done))
+        #expect(try !canRunAgain(cancelled))
+        #expect(interrupted.state == .interrupted)
+        #expect(interrupted.canRunAgain)
+    }
+
     @Test func dismissingARowDuringABatchDoesNotMoveTheRingBack() {
         var activity = UploadActivity()
         let a = queue(&activity, "a", bytes: 100, at: t0)

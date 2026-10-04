@@ -60,6 +60,16 @@ public struct UploadActivity: Equatable, Sendable {
             }
         }
 
+        /// Whether this upload can still send something: it is waiting or running, or it stopped in a way that can be
+        /// sent again (failed, interrupted, paused). A finished or cancelled one never will. What it needs from the
+        /// Mac (a staged clipboard file) and from the Keychain (the password of its server) has to stay until it is not.
+        public var canRunAgain: Bool {
+            switch state {
+            case .waiting, .uploading, .failed, .interrupted, .paused: true
+            case .succeeded, .cancelled: false
+            }
+        }
+
         public var fraction: Double {
             UploadProgress(bytesSent: bytesSent, totalBytes: totalBytes).fraction
         }
