@@ -117,5 +117,5 @@ first one an installed copy can pick up: install the first one, wait for the nex
 ## Installing a release
 
 Download `DropUp-<version>.dmg` from the Releases page, open it, and drag **DropUp** into **Applications**. Ejecting the
-disk image and deleting the download is left to the person installing. DropUp lives in the menubar, and shows in the Dock
-only while its setup or Settings window is open.
+disk image and deleting the download is left to the person installing. DropUp lives in the menubar only and never shows
+in the Dock.
