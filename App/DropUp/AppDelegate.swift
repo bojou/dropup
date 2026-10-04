@@ -30,6 +30,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             windows.showOnboarding()
         }
         model.shortcuts.start()
+        if ProcessInfo.processInfo.environment["DROPUP_PROBE_SETTINGS"] != nil {
+            Task { @MainActor in
+                try? await Task.sleep(nanoseconds: 1_500_000_000)
+                SettingsProbe.run(model: model)
+                exit(0)
+            }
+        }
     }
 
     func showSettings() {

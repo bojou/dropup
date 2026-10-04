@@ -364,3 +364,54 @@ private struct GeneralSettings: View {
         )
     }
 }
+
+/// Temporary timing probe for the slow-opening Settings window. Not for merging.
+@MainActor
+enum SettingsProbe {
+    static func run(model: AppModel) {
+        setvbuf(stdout, nil, _IOLBF, 0)
+        func ms(_ label: String, _ block: () -> Void) {
+            let start = CFAbsoluteTimeGetCurrent()
+            block()
+            print(String(format: "PROBE %@: %.1f ms", label, (CFAbsoluteTimeGetCurrent() - start) * 1000))
+        }
+        let sample = ServerConfig(transferProtocol: .sftp, host: "files.example.com", username: "deploy", remoteDirectory: "/var/www")
+        for _ in 1...2 { ms("SMAppService status") { _ = LaunchAtLogin.isEnabled } }
+        ms("keychain read (no item)") { _ = model.password(for: sample) }
+        do {
+            try model.save(sample, password: "pw")
+            print("PROBE saved a sample server")
+            for _ in 1...2 { ms("keychain read (item)") { _ = model.password(for: sample) } }
+        } catch {
+            print("PROBE could not save a sample server: \(error)")
+        }
+        ms("hostKeyFingerprint") { _ = model.hostKeyFingerprint(for: sample) }
+
+        func show<V: View>(_ label: String, _ view: V) {
+            let start = CFAbsoluteTimeGetCurrent()
+            let host = NSHostingController(rootView: view.frame(width: 600, height: 460))
+            let window = NSWindow(contentViewController: host)
+            window.styleMask = [.titled, .closable]
+            window.setContentSize(NSSize(width: 600, height: 460))
+            window.orderFrontRegardless()
+            host.view.layoutSubtreeIfNeeded()
+            if let rep = host.view.bitmapImageRepForCachingDisplay(in: host.view.bounds) {
+                host.view.cacheDisplay(in: host.view.bounds, to: rep)
+            }
+            let built = CFAbsoluteTimeGetCurrent()
+            // Let onAppear work and the first display pass run; time beyond the 200 ms asked for is the main thread being busy.
+            let settleStart = CFAbsoluteTimeGetCurrent()
+            RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.2))
+            let overrun = (CFAbsoluteTimeGetCurrent() - settleStart - 0.2) * 1000
+            window.orderOut(nil)
+            print(String(format: "PROBE %@: build+layout+draw %.1f ms, then busy %.1f ms after settling", label, (built - start) * 1000, max(overrun, 0)))
+        }
+        for round in 1...3 {
+            show("round \(round) General alone", GeneralSettings(model: model, close: {}))
+            show("round \(round) Connection alone", ConnectionSettings(model: model, close: {}))
+            show("round \(round) Shortcuts alone", ShortcutsSettings(model: model, close: {}))
+            show("round \(round) SettingsView (all three)", SettingsView(model: model, close: {}))
+        }
+        print("PROBE done")
+    }
+}
