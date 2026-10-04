@@ -84,6 +84,10 @@ public struct UploadActivity: Equatable, Sendable {
 
     // Speed is measured over a short sliding window of cumulative bytes sent.
     private var batchIDs: Set<UUID> = []
+    /// Members of the running batch that were taken out of the list by hand. They stay in the batch's own accounting
+    /// (the ring, the sound and the notice at the end) so removing a row never makes the ring jump back or hides what
+    /// the batch did.
+    private var departed: [Item] = []
     private var bytesFinished: Int64 = 0
     private var samples: [(time: Date, bytes: Int64)] = []
     private static let speedWindow: TimeInterval = 3
@@ -97,14 +101,13 @@ public struct UploadActivity: Equatable, Sendable {
     public var active: [Item] { items.filter { !$0.state.isFinished } }
     public var finished: [Item] { items.filter { $0.state.isFinished } }
     /// Files dropped since the queue was last idle, and how many of them have finished.
-    public var batchItems: [Item] { items.filter { batchIDs.contains($0.id) } }
+    public var batchItems: [Item] { items.filter { batchIDs.contains($0.id) } + departed }
     public var batchTotal: Int { items.filter { batchIDs.contains($0.id) }.count }
     public var batchDone: Int { items.filter { batchIDs.contains($0.id) && $0.state.isFinished }.count }
     /// Whether anything in the current batch failed, for choosing which sound to play when it is done.
     public var batchHadFailure: Bool {
-        items.contains { item in
-            guard batchIDs.contains(item.id), case .failed = item.state else { return false }
-            return true
+        batchItems.contains { item in
+            if case .failed = item.state { true } else { false }
         }
     }
     public var isBusy: Bool { items.contains { !$0.state.isFinished } }
@@ -116,7 +119,7 @@ public struct UploadActivity: Equatable, Sendable {
     /// Overall progress across the current batch: every file dropped since the queue was last idle,
     /// finished ones counting as complete, so the ring never jumps backwards when a file completes.
     public var overallFraction: Double {
-        let batch = items.filter { batchIDs.contains($0.id) }
+        let batch = batchItems
         // An empty file still counts as one byte so it moves the ring.
         let total = batch.reduce(Int64(0)) { $0 + max($1.totalBytes, 1) }
         guard total > 0 else { return 0 }
@@ -160,6 +163,7 @@ public struct UploadActivity: Equatable, Sendable {
                 // A new batch begins: restart the ring and the speed measurement. A failure from an earlier batch
                 // is not carried over, or every upload after it would show as failed until someone opened the popover.
                 batchIDs = []
+                departed = []
                 samples = []
                 bytesFinished = 0
                 hasUnseenFailure = false
@@ -240,17 +244,16 @@ public struct UploadActivity: Equatable, Sendable {
         hasUnseenFailure = false
     }
 
-    /// Whether `item` can be taken out of the list by itself: it is finished, and no batch is running. During a batch
-    /// the finished items are still being counted and summed up, so they stay until it is done. An interrupted upload
-    /// from before this batch is not counted in it, so it can go at any time.
+    /// Whether `item` can be taken out of the list by itself: any finished upload can, whatever the other uploads are doing.
     public func canDismiss(_ item: Item) -> Bool {
-        guard item.state.isFinished else { return false }
-        return !isBusy || (item.isResumable && !batchIDs.contains(item.id))
+        item.state.isFinished
     }
 
-    /// Takes one finished upload out of the list. Does nothing for an upload that isn't finished or while a batch runs.
+    /// Takes one finished upload out of the list. Does nothing for an upload that isn't finished. While a batch runs the
+    /// row goes but the batch still counts it: the ring doesn't move back and the notice at the end is right.
     public mutating func dismiss(_ id: UUID) {
         guard let item = items.first(where: { $0.id == id }), canDismiss(item) else { return }
+        if isBusy, batchIDs.contains(id) { departed.append(item) }
         remove(id)
     }
 

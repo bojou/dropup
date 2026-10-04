@@ -309,21 +309,21 @@ struct InterruptedUploadTests {
         #expect(activity.items.isEmpty)
     }
 
-    @Test func anInterruptedUploadCanBeRemovedByItselfWhileAnotherBatchRuns() {
+    @Test func anyFinishedUploadCanBeRemovedByItselfWhileAnotherBatchRuns() {
         var activity = UploadActivity()
         let lost = lose(&activity, "big.bin", at: t0)
         let stopped = activity.items[0]
         activity.apply(.queued(id: UUID(), fileName: "next.bin", totalBytes: 10), now: t0.addingTimeInterval(5))
         #expect(activity.isBusy)
 
-        // The old one is not part of this batch. A failure from this batch still waits for it to end.
+        // The old one is not part of this batch, and a failure from this batch can go too: the batch still counts it.
         #expect(activity.canDismiss(activity.items.first { $0.id == lost } ?? stopped))
         let thisBatch = UUID()
         activity.apply(.queued(id: thisBatch, fileName: "x.bin", totalBytes: 10), now: t0.addingTimeInterval(6))
         activity.apply(.started(id: thisBatch), now: t0.addingTimeInterval(6))
         activity.apply(.resumable(id: thisBatch, point("x.bin")), now: t0.addingTimeInterval(6))
         activity.apply(.failed(id: thisBatch, .connectionLost("lost")), now: t0.addingTimeInterval(7))
-        #expect(!activity.canDismiss(activity.items.first { $0.id == thisBatch }!))
+        #expect(activity.canDismiss(activity.items.first { $0.id == thisBatch }!))
     }
 
     // MARK: Between launches
