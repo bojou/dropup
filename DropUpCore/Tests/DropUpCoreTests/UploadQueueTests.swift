@@ -192,6 +192,85 @@ struct UploadQueueTests {
         #expect(connector.passwords == ["secret", "new"])
     }
 
+    /// Drops two files for `config`, saves `replacement` in Settings while the first one is running and the second waits,
+    /// then lets both go through. Returns what the connector saw.
+    private func dropTwoThenSave(_ replacement: ServerConfig, temp: TempFiles) async throws -> FakeConnector {
+        let settings = InMemorySettingsStore(config: config)
+        let credentials = InMemoryCredentialStore()
+        try credentials.setPassword("secret", for: config.credentialKey)
+        try credentials.setPassword("replacement-secret", for: replacement.credentialKey)
+        let connector = FakeConnector(session: FakeSession(hangUntilCancelled: true))
+        let queue = UploadQueue(settings: settings, credentials: credentials, connectors: connector, progressInterval: 0)
+
+        let ids = await queue.enqueue(try ["a.txt", "b.txt"].map { try temp.file(named: $0) })
+        try await eventually { connector.session.uploads.count == 1 }
+        try settings.saveServerConfig(replacement)
+        // The first upload ends; the second one's turn comes after the save.
+        await queue.cancel(ids[0])
+        try await eventually { connector.session.uploads.count == 2 }
+        await queue.cancel(ids[1])
+        await queue.waitUntilIdle()
+        return connector
+    }
+
+    @Test func aWaitingUploadKeepsTheServerItWasDroppedFor() async throws {
+        let temp = try TempFiles()
+        defer { temp.remove() }
+        let other = ServerConfig(transferProtocol: .ftp, host: "other.example.com", username: "you", remoteDirectory: "/other")
+
+        let connector = try await dropTwoThenSave(other, temp: temp)
+
+        #expect(connector.session.uploads == ["/drops/a.txt", "/drops/b.txt"])
+        #expect(connector.configs.allSatisfy { $0 == config })
+        #expect(connector.passwords.allSatisfy { $0 == "secret" })
+    }
+
+    @Test func aWaitingUploadKeepsItsFolderWhenOnlyTheFolderIsChanged() async throws {
+        let temp = try TempFiles()
+        defer { temp.remove() }
+
+        let connector = try await dropTwoThenSave(config.withRemoteDirectory("/new"), temp: temp)
+
+        #expect(connector.session.uploads == ["/drops/a.txt", "/drops/b.txt"])
+    }
+
+    @Test func anUploadForAnEarlierServerGoesThereWhateverIsSavedNow() async throws {
+        let temp = try TempFiles()
+        defer { temp.remove() }
+        let earlier = ServerConfig(transferProtocol: .ftp, host: "old.example.com", username: "me", remoteDirectory: "/old")
+        let credentials = InMemoryCredentialStore()
+        try credentials.setPassword("secret", for: config.credentialKey)
+        try credentials.setPassword("old-secret", for: earlier.credentialKey)
+        let connector = FakeConnector()
+        let queue = UploadQueue(settings: InMemorySettingsStore(config: config), credentials: credentials, connectors: connector, progressInterval: 0)
+
+        let ids = await queue.enqueue([try temp.file(named: "a.txt")], config: earlier)
+        await queue.waitUntilIdle()
+        let events = await collect(queue)
+
+        #expect(connector.session.uploads == ["/old/a.txt"])
+        #expect(connector.configs == [earlier])
+        #expect(connector.passwords == ["old-secret"])
+        #expect(events.contains { if case .succeeded(let id, _) = $0 { id == ids[0] } else { false } })
+    }
+
+    @Test func aNewUploadReportsTheServerItWasDroppedForAtOnce() async throws {
+        let temp = try TempFiles()
+        defer { temp.remove() }
+        let queue = makeQueue(config: config, connector: FakeConnector())
+
+        let ids = await queue.enqueue([try temp.file(named: "a.txt")], toDirectory: "/chosen")
+        await queue.waitUntilIdle()
+        let events = await collect(queue)
+
+        // Before it has connected, so a switch right now, or a quit, still leaves it knowing where it was going.
+        let first = events.compactMap { event -> ResumePoint? in
+            if case .resumable(let id, let point) = event, id == ids[0] { point } else { nil }
+        }.first
+        #expect(first?.config == config)
+        #expect(first?.directory == "/chosen")
+    }
+
     @Test func cancelsWaitingAndRunningUploads() async throws {
         let temp = try TempFiles()
         defer { temp.remove() }

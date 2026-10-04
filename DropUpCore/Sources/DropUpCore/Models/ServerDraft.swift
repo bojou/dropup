@@ -26,12 +26,55 @@ public struct ServerDraft: Equatable, Sendable {
         displayName = config.displayName ?? ""
     }
 
-    /// Switches protocol and moves the port along with it, unless the user typed a custom port.
-    public mutating func selectProtocol(_ new: TransferProtocol) {
-        if port.isEmpty || port == String(transferProtocol.defaultPort) {
-            port = String(new.defaultPort)
+    /// What the form holds for one connection type.
+    private struct Fields: Equatable, Sendable {
+        var host = ""
+        var port: String
+        var username = ""
+        var password = ""
+        var remoteDirectory = "/"
+        var displayName = ""
+
+        init(for transferProtocol: TransferProtocol) {
+            port = String(transferProtocol.defaultPort)
         }
+    }
+
+    /// What was typed for the types that aren't showing, so going back to one finds it as it was left. A type that
+    /// has not been shown yet starts empty: SFTP and FTP are different logins, and nothing typed for one is
+    /// carried over to the other (least of all a password, which plain FTP would send unencrypted).
+    private var others: [TransferProtocol: Fields] = [:]
+
+    private var fields: Fields {
+        get {
+            var current = Fields(for: transferProtocol)
+            current.host = host
+            current.port = port
+            current.username = username
+            current.password = password
+            current.remoteDirectory = remoteDirectory
+            current.displayName = displayName
+            return current
+        }
+        set {
+            host = newValue.host
+            port = newValue.port
+            username = newValue.username
+            password = newValue.password
+            remoteDirectory = newValue.remoteDirectory
+            displayName = newValue.displayName
+        }
+    }
+
+    /// Shows the form for another connection type, with the fields it had when it was last shown (empty the first
+    /// time, with that type's usual port). What was typed for the type that was showing is kept for when it comes back.
+    public mutating func selectProtocol(_ new: TransferProtocol) {
+        guard new != transferProtocol else { return }
+        others[transferProtocol] = fields
+        fields = others.removeValue(forKey: new) ?? Fields(for: new)
         transferProtocol = new
+        // An empty form isn't a mistake to point out yet.
+        showProblems = false
     }
 
     public var config: ServerConfig {

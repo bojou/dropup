@@ -5,6 +5,7 @@ public final class InMemorySettingsStore: SettingsStore, @unchecked Sendable {
     private let lock = NSLock()
     private var config: ServerConfig?
     private var preferences: Preferences
+    private var retiredKeys: Set<String> = []
 
     public init(config: ServerConfig? = nil, preferences: Preferences = Preferences()) {
         self.config = config
@@ -29,6 +30,14 @@ public final class InMemorySettingsStore: SettingsStore, @unchecked Sendable {
 
     public func savePreferences(_ preferences: Preferences) throws {
         lock.withLock { self.preferences = preferences }
+    }
+
+    public func loadRetiredServerKeys() -> Set<String> {
+        lock.withLock { retiredKeys }
+    }
+
+    public func saveRetiredServerKeys(_ keys: Set<String>) {
+        lock.withLock { retiredKeys = keys }
     }
 }
 
