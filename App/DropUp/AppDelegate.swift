@@ -9,6 +9,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     private lazy var windows = WindowCoordinator(model: model)
     private var statusItem: StatusItemController?
     private var dropPanel: DropPanelController?
+    private var editKeys: EditKeys?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         // First, before anything reads settings: a reinstall must not inherit the old connection.
@@ -30,6 +31,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             windows.showOnboarding()
         }
         model.shortcuts.start()
+
+        let editKeys = EditKeys { [weak self] in self?.model.shortcuts.isRecording ?? false }
+        editKeys.start()
+        self.editKeys = editKeys
     }
 
     func showSettings() {

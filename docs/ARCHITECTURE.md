@@ -33,6 +33,8 @@ The app target holds no logic worth testing. If something needs a test, it moves
 
 SwiftUI handles every window (onboarding, Settings) and keeps view code small. AppKit is used for exactly one thing: the menubar icon. SwiftUI's `MenuBarExtra` cannot accept files dragged onto the icon, so `StatusItemController` creates an `NSStatusItem`, registers the status button's window for file-URL drags, and forwards dropped URLs to `AppModel.upload(_:)`.
 
+DropUp is menubar-only (`LSUIElement`): no Dock icon and no app switcher entry, also while a window is open, so a window can get lost behind others. `WindowCoordinator` opens each window by activating the app, ordering the window front and making it key, and `StatusItemController` sends a click on the icon to the onboarding window until onboarding is done. With no menu bar on screen there is no Edit menu to turn ⌘X, ⌘C, ⌘V and ⌘A into actions, so `EditKeys` answers them while a text field is being edited (and ⌘W for the window in front).
+
 Testability does not come from the UI framework choice. It comes from keeping the UI thin and putting logic behind protocols in the package.
 
 ## Upload flow

@@ -28,7 +28,7 @@ targets:
         CFBundleDisplayName: DropUp
         CFBundleShortVersionString: "$(MARKETING_VERSION)"
         CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
-        LSUIElement: true # starts menubar-only; WindowCoordinator adds a Dock icon while a window is open
+        LSUIElement: true # menubar-only: no Dock icon and no app switcher entry, also while a window is open
         LSApplicationCategoryType: public.app-category.utilities
         NSHumanReadableCopyright: ""
         # Quick Upload asks Finder which files are selected. macOS shows this text in its permission prompt.

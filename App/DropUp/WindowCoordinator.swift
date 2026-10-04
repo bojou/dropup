@@ -4,9 +4,10 @@ import DropUpCore
 
 /// Opens the Onboarding, Settings, Browse and Change Folder windows.
 ///
-/// DropUp normally lives in the menubar only (LSUIElement). While one of its windows is open it also
-/// gets a Dock icon, so the window is easy to find again after switching to another app. Closing the
-/// last window takes the Dock icon away again; the menubar icon stays.
+/// DropUp lives in the menubar only (LSUIElement): no Dock icon and no entry in the app switcher, also while one of
+/// these windows is open. A window can end up behind other windows. The way back to it is in the menubar: the icon
+/// brings the setup window to the front until setup is done, and Settings, Browse and Change Folder open from the
+/// popover, which brings an open one forward instead of making a second.
 @MainActor
 final class WindowCoordinator: NSObject, NSWindowDelegate {
     private let model: AppModel
@@ -84,19 +85,26 @@ final class WindowCoordinator: NSObject, NSWindowDelegate {
         window.styleMask = [.titled, .closable]
         window.isReleasedWhenClosed = false
         window.delegate = self
+        // Opens on the desktop in use, not on the one the window was left on.
+        window.collectionBehavior.insert(.moveToActiveSpace)
         window.center()
         return window
     }
 
+    /// Brings the window to the front, gives it the keyboard and takes it out of the minimized state.
     private func present(_ window: NSWindow?) {
-        NSApp.setActivationPolicy(.regular)
+        guard let window else { return }
+        if window.isMiniaturized { window.deminiaturize(nil) }
+        Self.raise(window)
+        // The activation can land after the window was ordered in, so ask once more.
+        Task { @MainActor in Self.raise(window) }
+    }
+
+    private static func raise(_ window: NSWindow) {
         NSApp.activate()
-        window?.makeKeyAndOrderFront(nil)
-        // The first activation after the Dock icon appears can land before the switch has settled.
-        Task { @MainActor in
-            NSApp.activate()
-            window?.makeKeyAndOrderFront(nil)
-        }
+        window.makeKeyAndOrderFront(nil)
+        // Puts the window in front even when macOS has not made DropUp the active app yet.
+        window.orderFrontRegardless()
     }
 
     // MARK: NSWindowDelegate
@@ -118,13 +126,6 @@ final class WindowCoordinator: NSObject, NSWindowDelegate {
             chooseWindow = nil
             chooseModel?.close()
             chooseModel = nil
-        }
-        let anotherIsOpen = [onboardingWindow, settingsWindow, browseWindow, chooseWindow].contains { window in
-            guard let window else { return false }
-            return window !== closing && window.isVisible
-        }
-        if !anotherIsOpen {
-            NSApp.setActivationPolicy(.accessory)
         }
     }
 }

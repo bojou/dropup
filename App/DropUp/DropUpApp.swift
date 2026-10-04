@@ -10,7 +10,8 @@ struct DropUpApp: App {
         // The app still needs one scene, so this one is empty.
         Settings { EmptyView() }
             .commands {
-                // While a window is open DropUp has a menu bar, and "Settings…" there should open the real window.
+                // The Settings scene adds its own "Settings…" item (⌘,), which would open the empty scene above.
+                // Make it open the real window instead.
                 CommandGroup(replacing: .appSettings) {
                     Button("Settings…") { appDelegate.showSettings() }
                         .keyboardShortcut(",")
