@@ -209,7 +209,7 @@ final class AppModel {
             return
         }
         removalProblems[id] = nil
-        if force, row(id)?.state.isFinished == true { activity.remove(id) } else { activity.dismiss(id) }
+        activity.dismiss(id)
         forgetUnusedSources()
         persistRecent()
         scheduleRecentExpiry()
@@ -230,7 +230,7 @@ final class AppModel {
             if let problem {
                 removalProblems[id] = problem
             } else {
-                activity.remove(id)
+                activity.dismiss(id)
                 forgetUnusedSources()
                 persistRecent()
                 scheduleRecentExpiry()

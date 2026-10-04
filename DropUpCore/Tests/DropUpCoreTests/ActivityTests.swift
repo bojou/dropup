@@ -156,23 +156,68 @@ struct UploadActivityTests {
         #expect(activity.items.isEmpty)
     }
 
-    @Test func nothingIsDismissedWhileABatchRuns() throws {
+    @Test func aFinishedUploadCanBeDismissedWhileOthersStillRun() throws {
         var activity = UploadActivity()
         let done = queue(&activity, "done", bytes: 1, at: t0)
+        let cancelled = queue(&activity, "cancelled", bytes: 1, at: t0)
         let running = queue(&activity, "running", bytes: 1, at: t0)
         activity.apply(.started(id: running), now: t0)
         activity.apply(.succeeded(id: done, remotePath: "/done"), now: t0)
+        activity.apply(.cancelled(id: cancelled), now: t0)
         let finished = try #require(activity.items.first { $0.id == done })
+        let stopped = try #require(activity.items.first { $0.id == cancelled })
         let active = try #require(activity.items.first { $0.id == running })
-        #expect(!activity.canDismiss(finished))
+        #expect(activity.canDismiss(finished))
+        #expect(activity.canDismiss(stopped))
         #expect(!activity.canDismiss(active))
-        activity.dismiss(done)
-        activity.dismiss(running)
-        #expect(activity.items.count == 2)
 
-        activity.apply(.succeeded(id: running, remotePath: "/running"), now: t0.addingTimeInterval(1))
-        let both = activity.items
-        #expect(both.allSatisfy(activity.canDismiss))
+        activity.dismiss(cancelled)
+        activity.dismiss(running)
+        #expect(activity.items.map(\.fileName) == ["running", "done"])
+        #expect(activity.isBusy)
+        activity.dismiss(done)
+        #expect(activity.items.map(\.fileName) == ["running"])
+    }
+
+    @Test func dismissingARowDuringABatchDoesNotMoveTheRingBack() {
+        var activity = UploadActivity()
+        let a = queue(&activity, "a", bytes: 100, at: t0)
+        let b = queue(&activity, "b", bytes: 100, at: t0)
+        activity.apply(.started(id: a), now: t0)
+        activity.apply(.succeeded(id: a, remotePath: "/a"), now: t0)
+        activity.apply(.started(id: b), now: t0)
+        activity.apply(.progress(id: b, UploadProgress(bytesSent: 50, totalBytes: 100)), now: t0)
+        let before = activity.overallFraction
+        #expect(before == 0.75)
+
+        activity.dismiss(a)
+
+        #expect(activity.overallFraction == before)
+        #expect(activity.items.map(\.fileName) == ["b"])
+    }
+
+    @Test func theNoticeAtTheEndStillCountsWhatWasDismissedDuringTheBatch() {
+        var activity = UploadActivity()
+        let a = queue(&activity, "a.png", bytes: 1, at: t0)
+        let b = queue(&activity, "b.png", bytes: 1, at: t0)
+        let c = queue(&activity, "c.png", bytes: 1, at: t0)
+        activity.apply(.started(id: a), now: t0)
+        activity.apply(.succeeded(id: a, remotePath: "/a.png"), now: t0)
+        activity.apply(.started(id: b), now: t0)
+        activity.apply(.failed(id: b, .unsupportedItem), now: t0)
+        activity.dismiss(a)
+        activity.dismiss(b)
+        activity.apply(.started(id: c), now: t0)
+        activity.apply(.succeeded(id: c, remotePath: "/c.png"), now: t0)
+
+        #expect(!activity.isBusy)
+        #expect(activity.batchHadFailure)
+        #expect(ActivityText.completionNotice(activity)?.title == "2 uploaded, 1 failed")
+
+        // The next batch starts from nothing.
+        _ = queue(&activity, "d.png", bytes: 1, at: t0.addingTimeInterval(10))
+        #expect(!activity.batchHadFailure)
+        #expect(activity.batchItems.map(\.fileName) == ["d.png"])
     }
 
     @Test func measuresSpeedOverASlidingWindow() {
