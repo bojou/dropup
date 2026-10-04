@@ -146,9 +146,11 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
         } else if model.needsOnboarding {
             model.onNeedsOnboarding?()
         } else if let button = statusItem.button {
-            NSApp.activate()
             popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
             popover.contentViewController?.view.window?.makeKey()
+            // After the popover is up and has the keyboard: activating raises the app's key window, and activating
+            // first made that a Settings or Browse window hidden behind other apps instead of the popover.
+            NSApp.activate()
             model.popoverVisibilityChanged(true)
             startWatchingForDismissal()
         }

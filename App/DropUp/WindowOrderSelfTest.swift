@@ -60,6 +60,12 @@ enum WindowOrderSelfTest {
         return mine < theirs ? "ABOVE" : "below"
     }
 
+    /// Whether the window is on screen at all, at any level: the popover floats above ordinary windows.
+    private static func shown(_ window: NSWindow?) -> String {
+        guard let window else { return "none" }
+        return stack().contains { $0.number == window.windowNumber } ? "shown" : "not shown"
+    }
+
     static func run(helper: String, model: AppModel, windows: WindowCoordinator, status: StatusItemController) async -> Int32 {
         setvbuf(stdout, nil, _IOLBF, 0)
         var failed = false
@@ -126,7 +132,7 @@ enum WindowOrderSelfTest {
             await otherAppFront()
             let before = place(hidden)
             await openPopover()
-            let popover = (place(hidden), Self.place(status.popoverWindowForSelfTest))
+            let popover = (place(hidden), Self.shown(status.popoverWindowForSelfTest))
             status.selfTestChoose("settings"); await sleep(0.8)
             let first = (place("settings"), place(hidden), keyState("settings"))
             await otherAppFront()
@@ -139,7 +145,7 @@ enum WindowOrderSelfTest {
             var bad: [String] = []
             func need(_ ok: Bool, _ problem: String) { if !ok { bad.append(problem) } }
             need(popover.0 == "below", "opening the popover brought \(hidden) forward")
-            need(popover.1 != "offscreen" && popover.1 != "none", "the popover is not on screen")
+            need(popover.1 == "shown", "the popover is not on screen")
             need(first.0 == "ABOVE", "Settings did not come forward")
             need(first.1 == "below", "opening Settings brought \(hidden) forward")
             need(first.2 == "key", "Settings did not get the keyboard")
