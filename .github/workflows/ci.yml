@@ -58,6 +58,17 @@ jobs:
           fi
           kill "$PID" || true
 
+      # Opening or closing one of DropUp's windows must never bring another one of them forward. The debug build tests
+      # itself with a stand-in for another app in front (App/DropUp/WindowOrderSelfTest.swift).
+      - name: Check windows keep their place
+        timeout-minutes: 5
+        run: |
+          swiftc -o "$RUNNER_TEMP/other-app" scripts/window-test-other-app.swift
+          status=0
+          DROPUP_WINDOW_TEST="$RUNNER_TEMP/other-app" build/Build/Products/Debug/DropUp.app/Contents/MacOS/DropUp > windows.log 2>&1 || status=$?
+          grep '^SELFTEST' windows.log || cat windows.log
+          exit $status
+
       # The same signing and appcast steps a release runs, with a throwaway key made here, so a change to them
       # fails in a pull request and not in the middle of a release.
       - name: Dry run the update signing

@@ -146,9 +146,11 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
         } else if model.needsOnboarding {
             model.onNeedsOnboarding?()
         } else if let button = statusItem.button {
-            NSApp.activate()
             popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
             popover.contentViewController?.view.window?.makeKey()
+            // After the popover is up and has the keyboard: activating raises the app's key window, and activating
+            // first made that a Settings or Browse window hidden behind other apps instead of the popover.
+            NSApp.activate()
             model.popoverVisibilityChanged(true)
             startWatchingForDismissal()
         }
@@ -191,6 +193,19 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
         statusItem.button?.performClick(nil)
         statusItem.menu = nil
     }
+
+    #if DEBUG
+    /// For WindowOrderSelfTest: clicking a tile in the popover.
+    func selfTestChoose(_ name: String) {
+        switch name {
+        case "settings": openSettings()
+        case "browse": openBrowse()
+        default: openChooseFolder()
+        }
+    }
+
+    var popoverWindowForSelfTest: NSWindow? { popover.contentViewController?.view.window }
+    #endif
 
     private func openSettings() {
         popover.performClose(nil)
