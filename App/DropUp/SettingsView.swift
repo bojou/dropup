@@ -68,18 +68,21 @@ private struct ConnectionSettings: View {
         VStack(spacing: 0) {
             ScrollView {
                 VStack(alignment: .leading, spacing: 14) {
-                    VStack(alignment: .leading, spacing: 5) {
-                        Text("Connection type").font(.system(size: 12, weight: .medium)).foregroundStyle(.secondary)
-                        Picker("", selection: Binding(
-                            get: { draft.transferProtocol },
-                            set: { draft.selectProtocol($0) }
-                        )) {
-                            Text("SFTP").tag(TransferProtocol.sftp)
-                            Text("FTP").tag(TransferProtocol.ftp)
+                    HStack(alignment: .top, spacing: 24) {
+                        VStack(alignment: .leading, spacing: 5) {
+                            Text("Connection type").font(.system(size: 12, weight: .medium)).foregroundStyle(.secondary)
+                            Picker("", selection: Binding(
+                                get: { draft.transferProtocol },
+                                set: { draft.selectProtocol($0) }
+                            )) {
+                                Text("SFTP").tag(TransferProtocol.sftp)
+                                Text("FTP").tag(TransferProtocol.ftp)
+                            }
+                            .pickerStyle(.segmented)
+                            .labelsHidden()
+                            .frame(width: 170)
                         }
-                        .pickerStyle(.segmented)
-                        .labelsHidden()
-                        .frame(width: 170)
+                        LoginMethodPicker(draft: $draft)
                     }
                     FormField("Display name (optional)", text: $draft.displayName, prompt: "My website")
                     HStack(alignment: .top, spacing: 12) {
@@ -88,7 +91,14 @@ private struct ConnectionSettings: View {
                     }
                     HStack(alignment: .top, spacing: 12) {
                         FormField("Username", text: $draft.username)
-                        FormField("Password", text: $draft.password, secure: true)
+                        if draft.usesKey {
+                            FormField("Passphrase (optional)", text: $draft.passphrase, secure: true)
+                        } else {
+                            FormField("Password", text: $draft.password, secure: true)
+                        }
+                    }
+                    if draft.usesKey {
+                        KeyFileField(path: $draft.keyFilePath)
                     }
                     VStack(alignment: .leading, spacing: 5) {
                         Text("Remote folder").font(.system(size: 12, weight: .medium)).foregroundStyle(.secondary)
@@ -139,7 +149,7 @@ private struct ConnectionSettings: View {
         }
         .onAppear(perform: load)
         .onChange(of: draft.config) { tester.reset() }
-        .onChange(of: draft.password) { tester.reset() }
+        .onChange(of: draft.secret) { tester.reset() }
         .sheet(isPresented: $showBrowser) {
             VStack(spacing: 12) {
                 Text("Choose a folder").font(.headline)
@@ -216,7 +226,7 @@ private struct ConnectionSettings: View {
         draft.showProblems = true
         guard draft.isValid else { return }
         do {
-            try model.save(draft.config, password: draft.password)
+            try model.save(draft.config, secret: draft.secret)
             saveError = nil
             close()
         } catch {

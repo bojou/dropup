@@ -5,7 +5,8 @@ import Foundation
 import NIOCore
 import NIOSSH
 
-/// SFTP over SSH with password authentication, using Citadel.
+/// SFTP over SSH, using Citadel. It signs in with the password, or with a private key file when the config says so
+/// (`ServerConfig.loginMethod`); the `password` it is given is then the key's passphrase, empty for a key without one.
 ///
 /// Host keys are trusted on first use: the first key a server presents is remembered in `hostKeys`,
 /// and a different key later fails the connection with `UploaderError.hostKeyChanged`.
@@ -21,10 +22,13 @@ public struct SFTPConnector: ServerConnector {
     public func connect(to config: ServerConfig, password: String) async throws -> any ServerSession {
         let validator = TrustOnFirstUseValidator(hostKeys: hostKeys, hostID: config.hostKeyID)
         let username = config.username
+        // A key that can't be used is reported before anything is sent to the server.
+        let key = config.usesKey ? try SSHKeyLoader.load(username: username, keyFile: config.keyFilePath, passphrase: password) : nil
+        let method: SSHAuthenticationMethod = key?.method ?? .passwordBased(username: username, password: password)
         var settings = SSHClientSettings(
             host: config.host,
             port: config.port,
-            authenticationMethod: { .passwordBased(username: username, password: password) },
+            authenticationMethod: { method },
             hostKeyValidator: .custom(validator)
         )
         settings.connectTimeout = .seconds(connectTimeout)
@@ -39,7 +43,7 @@ public struct SFTPConnector: ServerConnector {
             if let fingerprint = validator.rejectedFingerprint {
                 throw UploaderError.hostKeyChanged(fingerprint: fingerprint)
             }
-            throw Self.map(error)
+            throw Self.map(error, key: key)
         }
 
         do {
@@ -51,13 +55,15 @@ public struct SFTPConnector: ServerConnector {
         }
     }
 
-    static func map(_ error: Error) -> Error {
+    /// `key` is what the login used, when it signed in with a key: a refusal then says the key was refused, not the password.
+    static func map(_ error: Error, key: SSHKeyLoader.Loaded? = nil) -> Error {
         switch error {
         case let error as UploaderError:
             return error
         case is CancellationError:
             return error
         case SSHClientError.allAuthenticationOptionsFailed, SSHClientError.unsupportedPasswordAuthentication:
+            if let key { return UploaderError.keyRejected(rsa: key.isRSA) }
             return UploaderError.authenticationFailed
         case let error as IOError:
             return UploaderError.connectionFailed(error.localizedDescription)

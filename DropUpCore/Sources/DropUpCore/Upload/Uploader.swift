@@ -118,6 +118,20 @@ public enum UploaderError: Error, Equatable, Sendable {
     case invalidRemotePath
     /// The server can't carry on a partly sent file: it doesn't know how big the file is, or won't start in the middle.
     case cannotResume
+    /// The SSH key file is missing or can't be read.
+    case keyFileUnreadable
+    /// The file isn't an OpenSSH private key DropUp can read.
+    case keyFormatUnsupported
+    /// A valid key of a kind DropUp can't sign in with. The name is how the kind is shown, such as `ECDSA`.
+    case keyTypeUnsupported(String)
+    /// The key is encrypted with a cipher DropUp can't open. The name is the cipher's, such as `aes256-gcm@openssh.com`.
+    case keyCipherUnsupported(String)
+    /// The key is protected by a passphrase and none is saved.
+    case keyNeedsPassphrase
+    /// The saved passphrase doesn't unlock the key.
+    case keyPassphraseWrong
+    /// The server didn't accept the key. `rsa` says it was an RSA key, which many servers no longer take.
+    case keyRejected(rsa: Bool)
 }
 
 extension UploaderError: LocalizedError {
@@ -137,6 +151,22 @@ extension UploaderError: LocalizedError {
             "The file or folder name can't be used on the server."
         case .cannotResume:
             "The server can't carry on a partly sent file."
+        case .keyFileUnreadable:
+            "The SSH key file is missing or can't be read."
+        case .keyFormatUnsupported:
+            "DropUp can't read this key file. It has to be an OpenSSH private key, an ed25519 or RSA one."
+        case .keyTypeUnsupported(let name):
+            "DropUp can't use \(name) keys yet. Use an ed25519 or RSA key."
+        case .keyCipherUnsupported(let name):
+            "DropUp can't open this key's encryption (\(name)). Save it again with aes256-ctr: ssh-keygen -p -Z aes256-ctr -f <key>"
+        case .keyNeedsPassphrase:
+            "This SSH key needs a passphrase."
+        case .keyPassphraseWrong:
+            "The passphrase doesn't unlock this SSH key."
+        case .keyRejected(let rsa):
+            rsa
+                ? "The server didn't accept this RSA key. Many servers no longer take RSA keys, and an ed25519 key is accepted more widely."
+                : "The server didn't accept this SSH key."
         }
     }
 }

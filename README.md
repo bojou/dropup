@@ -30,7 +30,7 @@ DropUp updates itself: once a day it looks for a newer release. When it finds on
 - **Undo** (⌘Z) and **Redo** (⇧⌘Z) take back and repeat new folders, renames, moves and copies, as long as the window is open. Undoing a copy removes only what the copy made, and a folder that has since got files of its own is left in place. Deleting can't be undone, because a server has no trash.
 - A move or paste onto a name that is already taken follows the **When a file already exists** setting (Settings > General), the one that decides what an upload does: with **Keep both**, a number is added (`a-1.txt`); with **Replace**, a file takes the place of a file with the same name (the old file is set aside under a hidden name until the new one is in place, so a failure never leaves the name empty). A replaced file can't be brought back, so DropUp says so and starts the Undo list afresh. A folder is never merged into or replaced by another item, and Rename never takes a name that is already used. Copying a file into its own folder always makes “name copy”.
 - **Shortcuts** (Settings → Shortcuts) upload from anywhere with a key, even while another app is in front. Each of the three has its own switch, key and Reset, and all of them start off. **Quick Upload** (default ⌃⌥⌘U) uploads the files and folders selected in Finder, and only while Finder is the front app. The first time you switch it on, DropUp explains and macOS asks to let DropUp control Finder (Privacy & Security → Automation); if that is refused the row says so and links to the setting. **Upload from Clipboard** (⌃⌥⌘V) uploads files or folders copied in Finder, or else an image (as a PNG), or else text (as a .txt file), named like `Clipboard 2026-10-04 09.36.12.png`. **Upload Latest Screenshot** (⌃⌥⌘S) uploads the newest screenshot from the folder macOS saves them in, if it is from the last 10 minutes (screenshots are found by the mark macOS puts on them, or else by a name starting with Screenshot; recordings don't count). With the Desktop, Documents or Downloads as that folder, macOS asks for permission to look in it, again after an explanation first. A key needs at least two of ⌃ ⌥ ⇧ ⌘, one of them ⌃ or ⌘ (macOS 15 no longer delivers global keys made of ⌥ or ⌥⇧ alone); a key another action uses is refused, and one macOS or another app already uses is flagged. An upload started this way is like any other (icon, Recent, sounds, hidden names, the same-name setting, pause and resume). When there is nothing to upload, or no server yet, a notification says why. An image or text from the clipboard waits as a file in the Mac's caches until its upload is done, cancelled or removed.
-- Server, credentials and upload folder are set in onboarding and editable in Settings → Connection. Passwords live in the macOS Keychain. An optional display name there (like "My website") is shown in the popover in place of the host. SFTP and FTP are separate logins: each keeps its own host, port, username, password, folder and name while the window is open, and what you typed for one never fills in the other. Settings opens on General.
+- Server, credentials and upload folder are set in onboarding and editable in Settings → Connection. Passwords live in the macOS Keychain. SFTP signs in with a password or with an SSH key (**Sign in with** in the same place; FTP has only the password). An optional display name there (like "My website") is shown in the popover in place of the host. SFTP and FTP are separate logins: each keeps its own host, port, username, password, folder and name while the window is open, and what you typed for one never fills in the other. The same holds for Password and SSH key: a password is never taken for a passphrase. Settings opens on General.
 - Changing the server or the upload folder only affects uploads you drop afterwards. An upload keeps the server and folder that were saved when you dropped it, whether it is waiting, running, retried, paused or resumed, even after a restart, and nothing is paused or cancelled by the switch. Uploads in Recent that went to the earlier server stay listed and carry on there; DropUp keeps that server's password in the Keychain for as long as one of them can still run, and deletes it once none can (switch back and it is simply the saved server again). An upload saved by a version before 0.1.39 that was still waiting goes to whichever server is saved.
 
 ## Status
@@ -45,9 +45,10 @@ pull request but has had little hands-on use on a real Mac yet, so expect rough 
 - Plain FTP and SFTP
 - Upload progress in the menubar icon
 - Onboarding to set server, credentials and upload folder, editable later in Settings
-- Passwords stored in the macOS Keychain
+- Passwords (and an SSH key's passphrase) stored in the macOS Keychain
+- SFTP login with an SSH key: an OpenSSH private key file (ed25519 or RSA, with or without a passphrase). DropUp keeps only where the file is, never a copy of it. Not supported: ECDSA and other key kinds, keys in the old PEM or PuTTY formats, ssh-agent, and making keys. RSA keys sign with SHA-1 only here, which current OpenSSH servers refuse, so use an ed25519 key where you can.
 
-Out of scope for v1: copying the uploaded file's URL, FTPS, multiple destinations, key-based SFTP auth.
+Out of scope for v1: copying the uploaded file's URL, FTPS, multiple destinations.
 
 ## Requirements
 
@@ -65,9 +66,9 @@ swift test --package-path DropUpCore --filter DropUpCoreTests
 The integration tests upload to real FTP and SFTP servers. They are skipped unless the servers are running:
 
 ```sh
-pip install pyftpdlib asyncssh
+pip install pyftpdlib asyncssh bcrypt
 python3 scripts/test-servers.py > /tmp/dropup-servers.log &
-sleep 2 && source <(grep '^export' /tmp/dropup-servers.log)
+until grep -q '^ready' /tmp/dropup-servers.log; do sleep 1; done; source <(grep '^export' /tmp/dropup-servers.log)
 swift test --package-path DropUpCore
 ```
 

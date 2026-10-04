@@ -310,14 +310,16 @@ final class AppModel {
 
     // MARK: Settings
 
+    /// What signing in to `config` takes from the Keychain: the password, or an SSH key's passphrase. Empty when none is saved.
     func password(for config: ServerConfig) -> String {
         (try? credentials.password(for: config.credentialKey)) ?? ""
     }
 
-    /// Saves both halves of the setup: the config to UserDefaults and the password to the Keychain. The password of the
-    /// server it replaces stays in the Keychain while an upload that went there can still run (see `RetiredPasswords`).
-    func save(_ config: ServerConfig, password: String) throws {
-        try credentials.setPassword(password, for: config.credentialKey)
+    /// Saves both halves of the setup: the config to UserDefaults and the secret (the password, or an SSH key's
+    /// passphrase) to the Keychain. The secret of the server it replaces stays in the Keychain while an upload that went
+    /// there can still run (see `RetiredPasswords`).
+    func save(_ config: ServerConfig, secret: String) throws {
+        try credentials.saveLoginSecret(secret, for: config)
         let previous = settings.loadServerConfig()
         try settings.saveServerConfig(config)
         self.config = config

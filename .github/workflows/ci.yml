@@ -14,7 +14,7 @@ jobs:
       - name: Start test FTP and SFTP servers
         run: |
           python3 -m venv "$RUNNER_TEMP/venv"
-          "$RUNNER_TEMP/venv/bin/pip" install pyftpdlib asyncssh
+          "$RUNNER_TEMP/venv/bin/pip" install pyftpdlib asyncssh bcrypt
           "$RUNNER_TEMP/venv/bin/python" scripts/test-servers.py > "$RUNNER_TEMP/servers.log" 2>&1 &
           for _ in $(seq 1 30); do
             grep -q '^ready' "$RUNNER_TEMP/servers.log" && break

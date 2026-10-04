@@ -7,6 +7,26 @@ public protocol CredentialStore: Sendable {
     func removePassword(for key: String) throws
 }
 
+extension CredentialStore {
+    /// What signing in to `config` needs from the Keychain: the password, or for an SSH key its passphrase. Nil when a
+    /// password login has none saved. A key login always has an answer: a key that has no passphrase has nothing saved,
+    /// and the empty passphrase it is read as is what such a key is opened with.
+    public func loginSecret(for config: ServerConfig) -> String? {
+        if config.usesKey { return (try? password(for: config.credentialKey)) ?? "" }
+        return try? password(for: config.credentialKey)
+    }
+
+    /// Keeps the secret for `config`. A password login saves whatever was typed, as it always did. A key without a
+    /// passphrase has nothing to keep, and a passphrase saved before is removed.
+    public func saveLoginSecret(_ secret: String, for config: ServerConfig) throws {
+        if config.usesKey, secret.isEmpty {
+            try removePassword(for: config.credentialKey)
+        } else {
+            try setPassword(secret, for: config.credentialKey)
+        }
+    }
+}
+
 public enum CredentialStoreError: Error, Equatable, Sendable {
     case unexpectedStatus(Int32)
     case invalidData
