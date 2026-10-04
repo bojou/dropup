@@ -402,6 +402,13 @@ private struct UploadRow: View {
         }
     }
 
+    /// For an upload that starts from the beginning: the arrow in a ring, as round as the other buttons.
+    private var retryButton: some View {
+        roundButton("arrow.clockwise", label: "Retry upload", help: "Retry") {
+            model.retry(item.id)
+        }
+    }
+
     private var isFailure: Bool {
         if case .failed = item.state { return true }
         return removalProblem != nil
@@ -478,14 +485,13 @@ private struct UploadRow: View {
                     .accessibilityLabel("Uploaded")
             }
         case .failed, .interrupted, .paused:
-            // Same spacing as the pause and cancel pair, so Pause turns into Resume where it stands.
+            // Same spacing as the pause and cancel pair, so Pause turns into Resume where it stands. Resume and Retry are icons.
             HStack(spacing: 6) {
                 if model.canRetry(item.id) {
                     if model.resumes(item.id) {
                         playButton
                     } else {
-                        Button(model.retryTitle(item.id)) { model.retry(item.id) }
-                            .controlSize(.small)
+                        retryButton
                     }
                 }
                 if canDismiss { dismissButton }
