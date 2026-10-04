@@ -33,6 +33,9 @@ enum MenubarProbe {
     }
 
     static func run(statusItem: StatusItemController) async {
+        let mode = ProcessInfo.processInfo.environment["DROPUP_PROBE_MODE"] ?? "activate"
+        if mode == "regular" { NSApp.setActivationPolicy(.regular) }
+        log("mode=\(mode) editkeys=\(ProcessInfo.processInfo.environment["DROPUP_PROBE_NO_EDITKEYS"] == nil)")
         log("policy accessory=\(NSApp.activationPolicy() == .accessory) mainMenu=\(NSApp.mainMenu?.items.map(\.title) ?? [])")
         await wait(1.5)
         let onboarding = NSApp.windows.first { $0.title == "Welcome to DropUp" }
@@ -66,7 +69,11 @@ enum MenubarProbe {
         window.isReleasedWhenClosed = false
         window.title = "Harness"
         window.center()
-        NSApp.activate()
+        switch mode {
+        case "ignoring": NSApp.activate(ignoringOtherApps: true)
+        case "running": NSRunningApplication.current.activate(options: [])
+        default: NSApp.activate()
+        }
         window.makeKeyAndOrderFront(nil)
         window.orderFrontRegardless()
         await wait(1.0)
@@ -104,6 +111,21 @@ enum MenubarProbe {
             log("10.\(index) \(kind) pasteboard after select all + copy: \(NSPasteboard.general.string(forType: .string).map { "'\($0)'" } ?? "empty")")
             await press("x", code: 7)
             log("11.\(index) \(kind) after cut: \(editing().map { "'\($0)'" } ?? "not editing") pasteboard=\(NSPasteboard.general.string(forType: .string).map { "'\($0)'" } ?? "empty")")
+        }
+        // Straight at the field editor, with no key event: does it do the four actions at all?
+        if let field = all.first {
+            _ = window.makeFirstResponder(field)
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString("direct-text", forType: .string)
+            let text = window.firstResponder as? NSText
+            text?.paste(nil)
+            let pasted = editing() ?? "not editing"
+            text?.selectAll(nil)
+            NSPasteboard.general.clearContents()
+            text?.copy(nil)
+            let copied = NSPasteboard.general.string(forType: .string) ?? "empty"
+            text?.cut(nil)
+            log("13 direct on \(String(describing: type(of: window.firstResponder!))): paste='\(pasted)' copy='\(copied)' after cut='\(editing() ?? "not editing")'")
         }
         await press("w", code: 13)
         log("12 after Cmd+W: \(state(window))")
