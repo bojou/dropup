@@ -7,7 +7,14 @@ public struct ServerDraft: Equatable, Sendable {
     public var host = ""
     public var port = String(TransferProtocol.sftp.defaultPort)
     public var username = ""
+    /// What a password login is typed with. Never shared with `passphrase`: one is not the other.
     public var password = ""
+    /// How an SFTP login signs in. FTP is always a password login, whatever this says.
+    public var loginMethod = LoginMethod.password
+    /// The chosen private key file, for an SSH key login. Empty until one is chosen.
+    public var keyFilePath = ""
+    /// The key's passphrase, if it has one.
+    public var passphrase = ""
     public var remoteDirectory = "/"
     /// Optional; empty means none.
     public var displayName = ""
@@ -16,12 +23,20 @@ public struct ServerDraft: Equatable, Sendable {
 
     public init() {}
 
+    /// The form for a saved `config`. `password` is the saved secret: the password, or the key's passphrase when the
+    /// config signs in with a key.
     public init(config: ServerConfig, password: String) {
         transferProtocol = config.transferProtocol
         host = config.host
         port = String(config.port)
         username = config.username
-        self.password = password
+        if config.usesKey {
+            loginMethod = .sshKey
+            keyFilePath = config.keyFilePath ?? ""
+            passphrase = password
+        } else {
+            self.password = password
+        }
         remoteDirectory = config.remoteDirectory
         displayName = config.displayName ?? ""
     }
@@ -32,6 +47,9 @@ public struct ServerDraft: Equatable, Sendable {
         var port: String
         var username = ""
         var password = ""
+        var loginMethod = LoginMethod.password
+        var keyFilePath = ""
+        var passphrase = ""
         var remoteDirectory = "/"
         var displayName = ""
 
@@ -52,6 +70,9 @@ public struct ServerDraft: Equatable, Sendable {
             current.port = port
             current.username = username
             current.password = password
+            current.loginMethod = loginMethod
+            current.keyFilePath = keyFilePath
+            current.passphrase = passphrase
             current.remoteDirectory = remoteDirectory
             current.displayName = displayName
             return current
@@ -61,6 +82,9 @@ public struct ServerDraft: Equatable, Sendable {
             port = newValue.port
             username = newValue.username
             password = newValue.password
+            loginMethod = newValue.loginMethod
+            keyFilePath = newValue.keyFilePath
+            passphrase = newValue.passphrase
             remoteDirectory = newValue.remoteDirectory
             displayName = newValue.displayName
         }
@@ -77,6 +101,21 @@ public struct ServerDraft: Equatable, Sendable {
         showProblems = false
     }
 
+    /// Whether the form is for an SSH key login: SFTP, with the key method picked.
+    public var usesKey: Bool { transferProtocol == .sftp && loginMethod == .sshKey }
+
+    /// Switches how an SFTP login signs in. Each method keeps what was typed for it, so going back finds it as it was
+    /// left, and nothing typed for one is carried to the other (a password is never taken for a passphrase).
+    public mutating func selectLoginMethod(_ new: LoginMethod) {
+        guard new != loginMethod else { return }
+        loginMethod = new
+        // An empty form isn't a mistake to point out yet.
+        showProblems = false
+    }
+
+    /// What is saved in the Keychain and handed to the connector: the password, or the key's passphrase.
+    public var secret: String { usesKey ? passphrase : password }
+
     public var config: ServerConfig {
         ServerConfig(
             transferProtocol: transferProtocol,
@@ -85,7 +124,9 @@ public struct ServerDraft: Equatable, Sendable {
             username: username.trimmingCharacters(in: .whitespaces),
             remoteDirectory: RemotePath.normalizedDirectory(remoteDirectory),
             displayName: displayName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                ? nil : displayName.trimmingCharacters(in: .whitespacesAndNewlines)
+                ? nil : displayName.trimmingCharacters(in: .whitespacesAndNewlines),
+            loginMethod: usesKey ? .sshKey : .password,
+            keyFilePath: usesKey ? keyFilePath : nil
         )
     }
 
@@ -104,6 +145,7 @@ extension ServerConfigError {
         case .invalidHost: "Enter just the server name, like ftp.example.com."
         case .invalidPort: "Port must be a number between 1 and 65535."
         case .emptyUsername: "Enter your username."
+        case .emptyKeyFile: "Choose your private key file."
         }
     }
 }

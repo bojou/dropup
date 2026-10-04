@@ -23,7 +23,7 @@ final class ConnectionTester {
         task?.cancel()
         state = .testing
         let config = draft.config
-        let password = draft.password
+        let password = draft.secret
         task = Task {
             do {
                 let result = try await browser.testConnection(config, password: password)
@@ -59,7 +59,7 @@ final class FolderBrowserModel {
         isLoading = true
         error = nil
         let config = draft.config
-        let password = draft.password
+        let password = draft.secret
         task = Task {
             do {
                 let result = try await browser.listDirectories(config, password: password, path: path)

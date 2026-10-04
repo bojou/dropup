@@ -255,7 +255,7 @@ public actor UploadQueue {
     /// the folders stay. Returns nil when nothing is left, or why it couldn't be done.
     public func discard(_ point: ResumePoint) async -> String? {
         guard let path = point.partialPath, let config = point.config else { return nil }
-        guard let password = try? credentials.password(for: config.credentialKey) else {
+        guard let password = credentials.loginSecret(for: config) else {
             return UploadFailure.missingPassword.displayMessage
         }
         let connectors = self.connectors
@@ -324,7 +324,7 @@ public actor UploadQueue {
         let written = WrittenFile()
         // An interrupted upload has a file on the server that is its own. A cancel has to know, even before it connects.
         if let point = job.resume, let path = point.partialPath, let config = point.config,
-           let password = try? credentials.password(for: config.credentialKey) {
+           let password = credentials.loginSecret(for: config) {
             written.willUpload(to: path, on: config, password: password, alreadyThere: true)
         }
         let run = UploadRun(point: job.resume)
@@ -460,7 +460,8 @@ public actor UploadQueue {
         case .serverRejected(let code, _):
             // 421 the server is closing the connection, 425 and 426 the data connection could not be had or broke.
             return code == 421 || code == 425 || code == 426
-        case .authenticationFailed, .hostKeyChanged, .invalidRemotePath, .cannotResume:
+        case .authenticationFailed, .hostKeyChanged, .invalidRemotePath, .cannotResume,
+             .keyFileUnreadable, .keyFormatUnsupported, .keyTypeUnsupported, .keyCipherUnsupported, .keyNeedsPassphrase, .keyPassphraseWrong, .keyRejected:
             return false
         }
     }
@@ -497,7 +498,7 @@ public actor UploadQueue {
             }
             throw UploadFailure.unsupportedItem
         }
-        guard let password = try? credentials.password(for: config.credentialKey) else {
+        guard let password = credentials.loginSecret(for: config) else {
             throw UploadFailure.missingPassword
         }
 

@@ -32,7 +32,7 @@ struct OnboardingView: View {
         }
         .frame(width: 600, height: 460)
         .onChange(of: draft.config) { tester.reset() }
-        .onChange(of: draft.password) { tester.reset() }
+        .onChange(of: draft.secret) { tester.reset() }
     }
 
     // MARK: Steps
@@ -106,14 +106,25 @@ struct OnboardingView: View {
 
     private var serverDetails: some View {
         VStack(alignment: .leading, spacing: 14) {
-            heading("Server details", subtitle: "Connecting over \(draft.transferProtocol.rawValue.uppercased()).")
+            HStack(alignment: .top) {
+                heading("Server details", subtitle: "Connecting over \(draft.transferProtocol.rawValue.uppercased()).")
+                Spacer()
+                LoginMethodPicker(draft: $draft)
+            }
             HStack(alignment: .top, spacing: 12) {
                 field("Host", text: $draft.host, prompt: "files.example.com")
                 field("Port", text: $draft.port, prompt: "").frame(width: 96)
             }
             HStack(alignment: .top, spacing: 12) {
                 field("Username", text: $draft.username, prompt: "")
-                FormField("Password", text: $draft.password, secure: true)
+                if draft.usesKey {
+                    FormField("Passphrase (optional)", text: $draft.passphrase, secure: true)
+                } else {
+                    FormField("Password", text: $draft.password, secure: true)
+                }
+            }
+            if draft.usesKey {
+                KeyFileField(path: $draft.keyFilePath)
             }
             ForEach(draft.problems, id: \.self) { Text($0).font(.callout).foregroundStyle(.red) }
             HStack(spacing: 12) {
@@ -122,7 +133,8 @@ struct OnboardingView: View {
                 testStatus
             }
             Spacer()
-            Label("Your password is stored in the macOS Keychain.", systemImage: "lock")
+            Label(draft.usesKey ? "Your key stays where it is. A passphrase is stored in the macOS Keychain."
+                                : "Your password is stored in the macOS Keychain.", systemImage: "lock")
                 .font(.system(size: 11))
                 .foregroundStyle(.secondary)
                 .padding(.bottom, 14)
@@ -246,7 +258,7 @@ struct OnboardingView: View {
             draft.showProblems = true
             guard step.canContinue(with: draft) else { return }
             do {
-                try model.save(draft.config, password: draft.password)
+                try model.save(draft.config, secret: draft.secret)
                 saveError = nil
                 go(to: step.next)
             } catch {

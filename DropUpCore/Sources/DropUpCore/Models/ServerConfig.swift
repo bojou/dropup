@@ -13,13 +13,25 @@ public enum TransferProtocol: String, Codable, CaseIterable, Sendable {
     }
 }
 
-/// Everything DropUp needs to know about the destination, except the password.
-/// The password lives in the Keychain (see `CredentialStore`) and is looked up by `credentialKey`.
+/// How DropUp signs in to the server. Only SFTP has a choice; FTP always uses the password.
+public enum LoginMethod: String, Codable, CaseIterable, Sendable {
+    case password
+    /// A private key file on this Mac, with an optional passphrase.
+    case sshKey
+}
+
+/// Everything DropUp needs to know about the destination, except the secret.
+/// The secret (the password, or an SSH key's passphrase) lives in the Keychain (see `CredentialStore`) and is looked up
+/// by `credentialKey`. The key itself is never copied: only the path of its file is kept here.
 public struct ServerConfig: Codable, Equatable, Sendable {
     public var transferProtocol: TransferProtocol
     public var host: String
     public var port: Int
     public var username: String
+    /// How to sign in. Settings saved before SSH keys existed have no such field and are `.password`.
+    public var loginMethod: LoginMethod
+    /// The private key file, for `.sshKey`. Nil for a password login.
+    public var keyFilePath: String?
     /// Directory on the server that dropped files are uploaded into, e.g. `/public_html/drops`.
     public var remoteDirectory: String
     /// An optional name to show instead of the protocol and host, such as `My website`. Settings saved before
@@ -32,7 +44,9 @@ public struct ServerConfig: Codable, Equatable, Sendable {
         port: Int? = nil,
         username: String,
         remoteDirectory: String,
-        displayName: String? = nil
+        displayName: String? = nil,
+        loginMethod: LoginMethod = .password,
+        keyFilePath: String? = nil
     ) {
         self.transferProtocol = transferProtocol
         self.host = host
@@ -40,11 +54,40 @@ public struct ServerConfig: Codable, Equatable, Sendable {
         self.username = username
         self.remoteDirectory = remoteDirectory
         self.displayName = displayName
+        self.loginMethod = loginMethod
+        self.keyFilePath = keyFilePath
     }
 
-    /// Stable key used to store and fetch the password for this server.
+    private enum CodingKeys: String, CodingKey {
+        case transferProtocol, host, port, username, remoteDirectory, displayName, loginMethod, keyFilePath
+    }
+
+    /// Reads settings from every version: those from before SSH keys have no `loginMethod` and are password logins.
+    public init(from decoder: any Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        transferProtocol = try values.decode(TransferProtocol.self, forKey: .transferProtocol)
+        host = try values.decode(String.self, forKey: .host)
+        port = try values.decode(Int.self, forKey: .port)
+        username = try values.decode(String.self, forKey: .username)
+        remoteDirectory = try values.decode(String.self, forKey: .remoteDirectory)
+        displayName = try values.decodeIfPresent(String.self, forKey: .displayName)
+        loginMethod = try values.decodeIfPresent(LoginMethod.self, forKey: .loginMethod) ?? .password
+        keyFilePath = try values.decodeIfPresent(String.self, forKey: .keyFilePath)
+    }
+
+    /// Whether this signs in with a key file. Plain FTP never does, whatever else is stored.
+    public var usesKey: Bool { transferProtocol == .sftp && loginMethod == .sshKey }
+
+    /// Stable key used to store and fetch the secret for this server: the password, or an SSH key's passphrase.
+    ///
+    /// A password login keeps the key it always had, so passwords saved by earlier versions are found as they were.
+    /// A key login has a key of its own, which names the key file by a short stamp (never the path, which would end
+    /// up wherever the key is shown, such as in a drag), so a password and a passphrase for the same host and user
+    /// are two items and never overwrite each other.
     public var credentialKey: String {
-        "\(transferProtocol.rawValue)://\(username)@\(host):\(port)"
+        let base = "\(transferProtocol.rawValue)://\(username)@\(host):\(port)"
+        guard usesKey else { return base }
+        return "\(transferProtocol.rawValue)+key://\(username)@\(host):\(port)#\(KeyFileStamp.of(keyFilePath ?? ""))"
     }
 
     /// The display name without surrounding spaces, or nil when there is none worth showing.
@@ -77,6 +120,22 @@ public enum ServerConfigError: Error, Equatable, Sendable {
     case invalidHost
     case invalidPort
     case emptyUsername
+    /// An SSH key login with no key file chosen.
+    case emptyKeyFile
+}
+
+/// A short, stable stamp of a key file's path (FNV-1a, 64 bits, in hex): enough to tell two keys apart in a Keychain
+/// account name without putting the path there. It is not a secret and not a security measure.
+enum KeyFileStamp {
+    static func of(_ path: String) -> String {
+        var hash: UInt64 = 0xcbf29ce484222325
+        for byte in path.utf8 {
+            hash ^= UInt64(byte)
+            hash = hash &* 0x100000001b3
+        }
+        let digits = String(hash, radix: 16)
+        return String(repeating: "0", count: 16 - digits.count) + digits
+    }
 }
 
 extension ServerConfig {
@@ -94,6 +153,9 @@ extension ServerConfig {
         }
         if username.trimmingCharacters(in: .whitespaces).isEmpty {
             errors.append(.emptyUsername)
+        }
+        if usesKey, (keyFilePath ?? "").trimmingCharacters(in: .whitespaces).isEmpty {
+            errors.append(.emptyKeyFile)
         }
         return errors
     }

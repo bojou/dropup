@@ -614,7 +614,7 @@ struct ResumeIntegrationTests {
 // MARK: Cutting connections
 
 /// What the tests do to the connections: cut an upload off after some bytes, and keep the network down for a while.
-private final class Switchboard: @unchecked Sendable {
+final class Switchboard: @unchecked Sendable {
     private let lock = NSLock()
     private var cuts: [(path: String, after: Int64, down: TimeInterval, holds: Bool)] = []
     private var downUntil: Date?
@@ -668,7 +668,7 @@ private final class Switchboard: @unchecked Sendable {
     }
 }
 
-private struct BreakingConnectors: ConnectorFactory {
+struct BreakingConnectors: ConnectorFactory {
     let board: Switchboard
     let ftp: FTPConnector
     let sftp: SFTPConnector
