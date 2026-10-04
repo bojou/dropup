@@ -26,7 +26,7 @@ struct PopoverView: View {
         return VStack(spacing: PopoverLayout.spacing) {
             header
             updateNotice
-            if activity.isBusy {
+            if activity.isBusy || activity.hasPaused {
                 dropMoreStrip
             } else if activity.items.isEmpty {
                 readyZone
@@ -372,6 +372,36 @@ private struct UploadRow: View {
         .accessibilityLabel(label)
     }
 
+    /// The round buttons Pause and Resume share one size and one place at the end of the row: pausing turns the pause
+    /// icon into the play icon where it stands.
+    private func roundButton(_ symbol: String, label: String, help: String, nudge: CGFloat = 0, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: symbol)
+                .font(.system(size: 9, weight: .bold))
+                .offset(x: nudge)
+                .frame(width: 22, height: 22)
+                .background(Circle().fill(Color.primary.opacity(0.08)))
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(.secondary)
+        .help(help)
+        .accessibilityLabel(label)
+    }
+
+    private var pauseButton: some View {
+        roundButton("pause.fill", label: "Pause upload", help: model.canPause ? "Pause" : "Pausing needs Keep recent uploads to be on") {
+            model.pause(item.id)
+        }
+        .disabled(!model.canPause)
+    }
+
+    private var playButton: some View {
+        // The triangle's weight sits to its left, so it is nudged to look centred in the circle.
+        roundButton("play.fill", label: "Resume upload", help: "Resume", nudge: 0.5) {
+            model.retry(item.id)
+        }
+    }
+
     private var isFailure: Bool {
         if case .failed = item.state { return true }
         return removalProblem != nil
@@ -423,17 +453,7 @@ private struct UploadRow: View {
         switch item.state {
         case .waiting, .uploading:
             HStack(spacing: 6) {
-                Button { model.pause(item.id) } label: {
-                    Image(systemName: "pause.fill")
-                        .font(.system(size: 9, weight: .bold))
-                        .frame(width: 22, height: 22)
-                        .background(Circle().fill(Color.primary.opacity(0.08)))
-                }
-                .buttonStyle(.plain)
-                .foregroundStyle(.secondary)
-                .disabled(!model.canPause)
-                .help(model.canPause ? "Pause" : "Pausing needs Keep recent uploads to be on")
-                .accessibilityLabel("Pause upload")
+                pauseButton
                 Button { model.cancel(item.id) } label: {
                     Image(systemName: "xmark")
                         .font(.system(size: 9, weight: .bold))
@@ -458,10 +478,15 @@ private struct UploadRow: View {
                     .accessibilityLabel("Uploaded")
             }
         case .failed, .interrupted, .paused:
-            HStack(spacing: 8) {
+            // Same spacing as the pause and cancel pair, so Pause turns into Resume where it stands.
+            HStack(spacing: 6) {
                 if model.canRetry(item.id) {
-                    Button(model.retryTitle(item.id)) { model.retry(item.id) }
-                        .controlSize(.small)
+                    if model.resumes(item.id) {
+                        playButton
+                    } else {
+                        Button(model.retryTitle(item.id)) { model.retry(item.id) }
+                            .controlSize(.small)
+                    }
                 }
                 if canDismiss { dismissButton }
             }

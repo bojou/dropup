@@ -190,6 +190,20 @@ struct InterruptedUploadTests {
         #expect(ActivityText.finishedSummary(activity) == "1 paused")
     }
 
+    @Test func onlyAPausedUploadCountsAsPausedAndItGoesWhenItIsResumedOrRemoved() {
+        var activity = UploadActivity()
+        #expect(!activity.hasPaused)
+        let id = pause(&activity, "big.bin", at: t0)
+        #expect(activity.hasPaused)
+
+        // Resumed, it is running again; a finished or interrupted upload is not paused.
+        activity.apply(.queued(id: id, fileName: "big.bin", totalBytes: 100), now: t0)
+        activity.apply(.started(id: id), now: t0)
+        #expect(!activity.hasPaused)
+        activity.apply(.succeeded(id: id, remotePath: "/drops/big.bin"), now: t0)
+        #expect(!activity.hasPaused)
+    }
+
     @Test func aPausedUploadLeavesTheBatchSoTheRestGoesOnWithoutIt() {
         var activity = UploadActivity()
         let id = start(&activity, "a.bin", at: t0)
