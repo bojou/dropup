@@ -1,7 +1,7 @@
 import SwiftUI
 import DropUpCore
 
-/// Settings: a Connection tab for the server and a General tab for everything else.
+/// Settings: a Connection tab for the server, a General tab for most things and a Shortcuts tab for the global keys.
 /// Same window size and chrome as onboarding, so the two read as one app.
 struct SettingsView: View {
     static let size = CGSize(width: 600, height: 460)
@@ -11,20 +11,21 @@ struct SettingsView: View {
     let close: () -> Void
     @State private var tab = Tab.connection
 
-    private enum Tab { case connection, general }
+    private enum Tab { case connection, general, shortcuts }
 
     var body: some View {
         VStack(spacing: 0) {
             Picker("", selection: $tab) {
                 Text("Connection").tag(Tab.connection)
                 Text("General").tag(Tab.general)
+                Text("Shortcuts").tag(Tab.shortcuts)
             }
             .pickerStyle(.segmented)
             .labelsHidden()
-            .frame(width: 240)
+            .frame(width: 330)
             .padding(.vertical, 14)
             Divider()
-            // Both tabs stay alive so unsaved edits on Connection survive a peek at General.
+            // All tabs stay alive so unsaved edits on Connection survive a peek at the others.
             ZStack {
                 ConnectionSettings(model: model, close: close)
                     .opacity(tab == .connection ? 1 : 0)
@@ -34,6 +35,10 @@ struct SettingsView: View {
                     .opacity(tab == .general ? 1 : 0)
                     .disabled(tab != .general)
                     .accessibilityHidden(tab != .general)
+                ShortcutsSettings(model: model, close: close)
+                    .opacity(tab == .shortcuts ? 1 : 0)
+                    .disabled(tab != .shortcuts)
+                    .accessibilityHidden(tab != .shortcuts)
             }
         }
         .frame(width: Self.size.width, height: Self.size.height)

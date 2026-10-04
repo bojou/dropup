@@ -29,6 +29,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         if model.needsOnboarding {
             windows.showOnboarding()
         }
+        model.shortcuts.start()
     }
 
     func showSettings() {
