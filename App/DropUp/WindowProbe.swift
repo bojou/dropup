@@ -15,15 +15,23 @@ enum WindowProbe {
         }
     }
 
-    /// Whether another window of this app is above every window of other apps.
-    static func otherDropUpWindowIsOnTop(excluding window: NSWindow) -> Bool {
-        let order = zorder()
+    /// Whether the window is open but covered by a window of another app (or not on this desktop).
+    static func isBuried(_ window: NSWindow) -> Bool {
+        guard window.isVisible, !window.isMiniaturized else { return false }
+        let info = (CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]]) ?? []
         let me = ProcessInfo.processInfo.processIdentifier
-        let foreignTop = order.firstIndex { $0.pid != me } ?? Int.max
-        return NSApp.windows.contains { other in
-            guard other !== window, other.isVisible, let index = order.firstIndex(where: { $0.number == other.windowNumber }) else { return false }
-            return index < foreignTop
+        let top = NSScreen.screens.first?.frame.height ?? 0
+        let f = window.frame
+        let mine = CGRect(x: f.minX, y: top - f.maxY, width: f.width, height: f.height)
+        for entry in info {
+            guard (entry[kCGWindowLayer as String] as? NSNumber)?.intValue == 0,
+                  let number = (entry[kCGWindowNumber as String] as? NSNumber)?.intValue,
+                  let pid = (entry[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value else { continue }
+            if number == window.windowNumber { return false }
+            if pid != me, let bounds = entry[kCGWindowBounds as String] as? [String: Any],
+               let rect = CGRect(dictionaryRepresentation: bounds as CFDictionary), rect.intersects(mine) { return true }
         }
+        return true
     }
 
     private static func sleep(_ seconds: Double) async { try? await Task.sleep(nanoseconds: UInt64(seconds * 1e9)) }
@@ -69,7 +77,7 @@ enum WindowProbe {
         func windowFor(_ name: String) -> NSWindow? { windows.probeWindows[name] ?? nil }
         func closeAll() async {
             for name in ["onboarding", "settings", "browse", "choose"] { windowFor(name)?.close() }
-            await sleep(0.3)
+            await sleep(0.8)
             await helperFront()
         }
         func open(_ name: String) {
@@ -80,63 +88,103 @@ enum WindowProbe {
             default: windows.showOnboarding()
             }
         }
-        func popover() async {
-            status.togglePopover()
-            await sleep(0.4)
-            status.togglePopover()
-            await sleep(0.3)
-        }
+        func st(_ name: String) -> String { state(windowFor(name)) }
+        func key(_ name: String) -> String { (windowFor(name)?.isKeyWindow ?? false) ? "key" : "notkey" }
 
-        /// A: `hidden` is open and covered by the other app; Settings is opened, again, and closed.
+        /// A: `hidden` is open and covered by the other app; the popover is opened and Settings chosen from it, twice,
+        /// then Settings is closed with Done.
         func scenarioA(_ hidden: String, _ tag: String) async -> String {
             await closeAll()
-            open(hidden); await sleep(0.5)
+            open(hidden); await sleep(0.6)
             await helperFront()
-            let pre = state(windowFor(hidden))
-            await popover()
-            let afterPopover = state(windowFor(hidden))
-            open("settings"); await sleep(0.6)
-            let open1 = (state(windowFor("settings")), state(windowFor(hidden)))
+            let pre = st(hidden)
+            status.togglePopover(); await sleep(0.6)
+            let popOpen = st(hidden)
+            status.probeOpen("settings"); await sleep(0.8)
+            let first = (st("settings"), st(hidden), key("settings"))
             await helperFront()
-            open("settings"); await sleep(0.6)
-            let open2 = (state(windowFor("settings")), state(windowFor(hidden)))
-            windowFor("settings")?.close(); await sleep(0.6)
-            let closed = state(windowFor(hidden))
-            let bad = [afterPopover != "below" ? "popover raised \(hidden)" : nil,
-                       open1.0 != "ABOVE" ? "settings not above" : nil, open1.1 != "below" ? "open raised \(hidden)" : nil,
-                       open2.0 != "ABOVE" ? "2nd settings not above" : nil, open2.1 != "below" ? "2nd open raised \(hidden)" : nil,
+            status.togglePopover(); await sleep(0.6)
+            let popOpen2 = (st("settings"), st(hidden))
+            status.probeOpen("settings"); await sleep(0.8)
+            let second = (st("settings"), st(hidden), key("settings"))
+            windowFor("settings")?.close(); await sleep(0.8)
+            let closed = st(hidden)
+            let bad = [popOpen != "below" ? "popover raised \(hidden)" : nil,
+                       first.0 != "ABOVE" ? "settings not above" : nil, first.1 != "below" ? "open raised \(hidden)" : nil,
+                       first.2 != "key" ? "settings not key" : nil,
+                       popOpen2.0 != "below" || popOpen2.1 != "below" ? "2nd popover raised \(popOpen2)" : nil,
+                       second.0 != "ABOVE" ? "2nd settings not above" : nil, second.1 != "below" ? "2nd open raised \(hidden)" : nil,
+                       second.2 != "key" ? "2nd settings not key" : nil,
                        closed != "below" ? "close raised \(hidden)" : nil].compactMap { $0 }
-            return "\(tag) pre=\(pre) afterPopover=\(afterPopover) open=\(open1) open2=\(open2) afterClose=\(closed) -> \(bad.isEmpty ? "PASS" : "FAIL " + bad.joined(separator: ", "))"
+            return "\(tag) pre=\(pre) popover=\(popOpen) open=\(first) popover2=\(popOpen2) open2=\(second) afterClose=\(closed) active=\(NSApp.isActive) -> \(bad.isEmpty ? "PASS" : "FAIL " + bad.joined(separator: ", "))"
         }
 
-        /// B: Settings is open and covered; `other` is opened and closed.
+        /// B: Settings is open and covered; `other` is opened from the popover and closed.
         func scenarioB(_ other: String, _ tag: String) async -> String {
             await closeAll()
-            open("settings"); await sleep(0.5)
+            open("settings"); await sleep(0.6)
             await helperFront()
-            let pre = state(windowFor("settings"))
-            open(other); await sleep(0.6)
-            let opened = (state(windowFor(other)), state(windowFor("settings")))
-            windowFor(other)?.close(); await sleep(0.6)
-            let closed = state(windowFor("settings"))
-            let bad = [opened.0 != "ABOVE" ? "\(other) not above" : nil, opened.1 != "below" ? "open raised settings" : nil,
+            let pre = st("settings")
+            status.togglePopover(); await sleep(0.6)
+            let popOpen = st("settings")
+            status.probeOpen(other); await sleep(0.8)
+            let opened = (st(other), st("settings"), key(other))
+            windowFor(other)?.close(); await sleep(0.8)
+            let closed = st("settings")
+            let bad = [popOpen != "below" ? "popover raised settings" : nil,
+                       opened.0 != "ABOVE" ? "\(other) not above" : nil, opened.1 != "below" ? "open raised settings" : nil,
+                       opened.2 != "key" ? "\(other) not key" : nil,
                        closed != "below" ? "close raised settings" : nil].compactMap { $0 }
-            return "\(tag) pre=\(pre) open=\(opened) afterClose=\(closed) -> \(bad.isEmpty ? "PASS" : "FAIL " + bad.joined(separator: ", "))"
+            return "\(tag) pre=\(pre) popover=\(popOpen) open=\(opened) afterClose=\(closed) active=\(NSApp.isActive) -> \(bad.isEmpty ? "PASS" : "FAIL " + bad.joined(separator: ", "))"
+        }
+
+        /// V: two windows in plain view: closing the front one must still hand the keyboard to the other, which stays put.
+        func scenarioV(_ tag: String) async -> String {
+            await closeAll()
+            open("browse"); await sleep(0.6)
+            open("settings"); await sleep(0.8)
+            windowFor("settings")?.close(); await sleep(0.8)
+            let after = (st("browse"), key("browse"))
+            let bad = [after.0 != "ABOVE" ? "browse went away" : nil].compactMap { $0 }
+            return "\(tag) afterClose=\(after) -> \(bad.isEmpty ? "PASS" : "FAIL " + bad.joined(separator: ", "))"
+        }
+
+        /// O: onboarding hidden, Settings opened directly (as the app does) and closed; and the mirror.
+        func scenarioO(_ tag: String) async -> String {
+            await closeAll()
+            open("onboarding"); await sleep(0.6)
+            await helperFront()
+            let pre = st("onboarding")
+            open("settings"); await sleep(0.8)
+            let opened = (st("settings"), st("onboarding"), key("settings"))
+            windowFor("settings")?.close(); await sleep(0.8)
+            let closed = st("onboarding")
+            await closeAll()
+            open("settings"); await sleep(0.6)
+            await helperFront()
+            open("onboarding"); await sleep(0.8)
+            let opened2 = (st("onboarding"), st("settings"), key("onboarding"))
+            windowFor("onboarding")?.close(); await sleep(0.8)
+            let closed2 = st("settings")
+            let bad = [opened.0 != "ABOVE" ? "settings not above" : nil, opened.1 != "below" ? "open raised onboarding" : nil,
+                       closed != "below" ? "close raised onboarding" : nil,
+                       opened2.0 != "ABOVE" ? "onboarding not above" : nil, opened2.1 != "below" ? "open raised settings" : nil,
+                       closed2 != "below" ? "close raised settings" : nil].compactMap { $0 }
+            return "\(tag) pre=\(pre) open=\(opened) afterClose=\(closed) | open2=\(opened2) afterClose2=\(closed2) -> \(bad.isEmpty ? "PASS" : "FAIL " + bad.joined(separator: ", "))"
         }
 
         let environment = ProcessInfo.processInfo.environment
-        let only = environment["DROPUP_PROBE_COMBO"]
-        for o in 0...3 { for c in 0...2 { for p in 0...2 {
-            if let only, only != "\(o)\(c)\(p)" { continue }
-            WindowCoordinator.openStrategy = o
-            WindowCoordinator.closeStrategy = c
-            StatusItemController.popoverStrategy = p
-            let name = "o\(o) c\(c) p\(p)"
+        let fixes = (environment["DROPUP_PROBE_FIXES"] ?? "0").split(separator: ",").compactMap { Int($0) }
+        for fix in fixes {
+            WindowCoordinator.fix = fix
+            let name = "fix\(fix)"
             print("PROBE \(name) A-browse: \(await scenarioA("browse", "A-browse"))")
             print("PROBE \(name) B-browse: \(await scenarioB("browse", "B-browse"))")
             print("PROBE \(name) A-choose: \(await scenarioA("choose", "A-choose"))")
             print("PROBE \(name) B-choose: \(await scenarioB("choose", "B-choose"))")
-        } } }
+            print("PROBE \(name) V: \(await scenarioV("V"))")
+            print("PROBE \(name) O: \(await scenarioO("O"))")
+        }
         await closeAll()
         helper.terminate()
         print("PROBE done")

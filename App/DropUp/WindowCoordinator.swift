@@ -10,11 +10,27 @@ import DropUpCore
 /// popover, which brings an open one forward instead of making a second.
 @MainActor
 final class WindowCoordinator: NSObject, NSWindowDelegate {
-    // PROBE-ONLY: which way of opening and closing to try.
-    static var openStrategy = 0
-    static var closeStrategy = 0
+    // PROBE-ONLY: which fixes to try (bit flags).
+    static var fix = 0
+    static let gateClose = 1, gateCall = 2, gateAct = 4, popoverOrder = 8
+    static weak var shared: WindowCoordinator?
     var probeWindows: [String: NSWindow?] {
         ["onboarding": onboardingWindow, "settings": settingsWindow, "browse": browseWindow, "choose": chooseWindow]
+    }
+    private var presenting: NSWindow?
+    private var actHeld: [DropUpWindow] = []
+
+    /// Windows of ours that are open but covered by another app's windows are not eligible to become key or main until
+    /// they are released again, so AppKit has nothing to bring forward but what the user asked for.
+    func holdBackBuried(except target: NSWindow?) -> [DropUpWindow] {
+        let candidates = [onboardingWindow, settingsWindow, browseWindow, chooseWindow].compactMap { $0 as? DropUpWindow }
+        let held = candidates.filter { $0 !== target && WindowProbe.isBuried($0) }
+        for window in held { window.heldBack = true }
+        return held
+    }
+
+    func letGo(_ held: [DropUpWindow], after seconds: Double) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + seconds) { for window in held { window.heldBack = false } }
     }
 
     private let model: AppModel
@@ -28,6 +44,22 @@ final class WindowCoordinator: NSObject, NSWindowDelegate {
     init(model: AppModel) {
         self.model = model
         super.init()
+        Self.shared = self
+        NotificationCenter.default.addObserver(forName: NSApplication.willBecomeActiveNotification, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self, Self.fix & Self.gateAct != 0 else { return }
+                self.actHeld = self.holdBackBuried(except: self.presenting)
+            }
+        }
+        NotificationCenter.default.addObserver(forName: NSApplication.didBecomeActiveNotification, object: nil, queue: .main) { [weak self] _ in
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated {
+                    guard let self else { return }
+                    for window in self.actHeld { window.heldBack = false }
+                    self.actHeld = []
+                }
+            }
+        }
     }
 
     func showOnboarding() {
@@ -87,7 +119,7 @@ final class WindowCoordinator: NSObject, NSWindowDelegate {
     }
 
     private func makeWindow<Content: View>(title: String, content: Content) -> NSWindow {
-        let window = NSWindow(contentViewController: NSHostingController(rootView: content))
+        let window = DropUpWindow(contentViewController: NSHostingController(rootView: content))
         window.title = title
         window.styleMask = [.titled, .closable]
         window.isReleasedWhenClosed = false
@@ -102,43 +134,29 @@ final class WindowCoordinator: NSObject, NSWindowDelegate {
     private func present(_ window: NSWindow?) {
         guard let window else { return }
         if window.isMiniaturized { window.deminiaturize(nil) }
+        presenting = window
+        var held: [DropUpWindow] = []
+        if Self.fix & Self.gateCall != 0 { held = holdBackBuried(except: window) }
         Self.raise(window)
         // The activation can land after the window was ordered in, so ask once more.
         Task { @MainActor in Self.raise(window) }
+        letGo(held, after: 0.6)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak self] in
+            if self?.presenting === window { self?.presenting = nil }
+        }
     }
 
     private static func raise(_ window: NSWindow) {
-        switch openStrategy {
-        case 1:
-            window.makeKeyAndOrderFront(nil)
-            window.orderFrontRegardless()
-            NSApp.activate(ignoringOtherApps: true)
-        case 2:
-            NSRunningApplication.current.activate(options: [.activateIgnoringOtherApps])
-            window.makeKeyAndOrderFront(nil)
-            window.orderFrontRegardless()
-        case 3:
-            window.makeKeyAndOrderFront(nil)
-            window.orderFrontRegardless()
-            NSRunningApplication.current.activate(options: [.activateIgnoringOtherApps])
-        default:
-            NSApp.activate(ignoringOtherApps: true)
-            window.makeKeyAndOrderFront(nil)
-            window.orderFrontRegardless()
-        }
+        NSApp.activate(ignoringOtherApps: true)
+        window.makeKeyAndOrderFront(nil)
+        window.orderFrontRegardless()
     }
 
     // MARK: NSWindowDelegate
 
     func windowWillClose(_ notification: Notification) {
         guard let closing = notification.object as? NSWindow else { return }
-        switch Self.closeStrategy {
-        case 1:
-            if closing.isKeyWindow, !WindowProbe.otherDropUpWindowIsOnTop(excluding: closing) { NSApp.deactivate() }
-        case 2:
-            if closing.isKeyWindow { NSApp.deactivate() }
-        default: break
-        }
+        if Self.fix & Self.gateClose != 0 { letGo(holdBackBuried(except: closing), after: 0.6) }
         // Closing Settings, however it happens, throws away unsaved edits: the next open starts from what is saved.
         if closing === settingsWindow { settingsWindow = nil }
         if closing === browseWindow {
@@ -156,4 +174,10 @@ final class WindowCoordinator: NSObject, NSWindowDelegate {
             chooseModel = nil
         }
     }
+}
+
+final class DropUpWindow: NSWindow {
+    var heldBack = false
+    override var canBecomeKey: Bool { !heldBack && super.canBecomeKey }
+    override var canBecomeMain: Bool { !heldBack && super.canBecomeMain }
 }

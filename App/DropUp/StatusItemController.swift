@@ -19,7 +19,6 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
     /// Both dots are this wide (edge included) and have a thin white edge, so they stay visible on any menubar background.
     private static let dotSize: CGFloat = 10
     private static let dotEdge: CGFloat = 1
-    static var popoverStrategy = 0 // PROBE-ONLY
     private var clickAwayMonitor: Any?
     private var escapeMonitor: Any?
 
@@ -147,13 +146,18 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
         } else if model.needsOnboarding {
             model.onNeedsOnboarding?()
         } else if let button = statusItem.button {
-            switch Self.popoverStrategy {
-            case 1: NSRunningApplication.current.activate(options: [.activateIgnoringOtherApps])
-            case 2: break
-            default: NSApp.activate()
+            var held: [DropUpWindow] = []
+            if WindowCoordinator.fix & WindowCoordinator.gateCall != 0 { held = WindowCoordinator.shared?.holdBackBuried(except: nil) ?? [] }
+            if WindowCoordinator.fix & WindowCoordinator.popoverOrder != 0 {
+                popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
+                popover.contentViewController?.view.window?.makeKey()
+                NSApp.activate(ignoringOtherApps: true)
+            } else {
+                NSApp.activate(ignoringOtherApps: true)
+                popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
+                popover.contentViewController?.view.window?.makeKey()
             }
-            popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
-            popover.contentViewController?.view.window?.makeKey()
+            WindowCoordinator.shared?.letGo(held, after: 0.6)
             model.popoverVisibilityChanged(true)
             startWatchingForDismissal()
         }
@@ -195,6 +199,14 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
         statusItem.menu = menu
         statusItem.button?.performClick(nil)
         statusItem.menu = nil
+    }
+
+    func probeOpen(_ name: String) {
+        switch name {
+        case "settings": openSettings()
+        case "browse": openBrowse()
+        default: openChooseFolder()
+        }
     }
 
     private func openSettings() {
