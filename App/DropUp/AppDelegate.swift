@@ -1,4 +1,5 @@
 import AppKit
+import DropUpCore
 import SwiftUI
 import UserNotifications
 
@@ -13,6 +14,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     func applicationDidFinishLaunching(_ notification: Notification) {
         // First, before anything reads settings: a reinstall must not inherit the old connection.
         InstallReset.reconcile()
+        if ProcessInfo.processInfo.environment["DROPUP_PROBE_WINDOWS"] != nil {
+            try? model.save(ServerConfig(transferProtocol: .sftp, host: "127.0.0.1", port: 1, username: "x", remoteDirectory: "/"), secret: "")
+        }
         UNUserNotificationCenter.current().delegate = self
         let statusItem = StatusItemController(
             model: model,
@@ -30,6 +34,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             windows.showOnboarding()
         }
         model.shortcuts.start()
+        if ProcessInfo.processInfo.environment["DROPUP_PROBE_WINDOWS"] != nil {
+            Task { @MainActor in
+                await WindowProbe.run(model: model, windows: windows, status: statusItem)
+                exit(0)
+            }
+        }
     }
 
     func showSettings() {

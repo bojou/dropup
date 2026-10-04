@@ -10,6 +10,13 @@ import DropUpCore
 /// popover, which brings an open one forward instead of making a second.
 @MainActor
 final class WindowCoordinator: NSObject, NSWindowDelegate {
+    // PROBE-ONLY: which way of opening and closing to try.
+    static var openStrategy = 0
+    static var closeStrategy = 0
+    var probeWindows: [String: NSWindow?] {
+        ["onboarding": onboardingWindow, "settings": settingsWindow, "browse": browseWindow, "choose": chooseWindow]
+    }
+
     private let model: AppModel
     private var onboardingWindow: NSWindow?
     private var settingsWindow: NSWindow?
@@ -101,18 +108,37 @@ final class WindowCoordinator: NSObject, NSWindowDelegate {
     }
 
     private static func raise(_ window: NSWindow) {
-        // Deprecated since macOS 14, but the plain `activate()` is only a request that macOS can ignore, and for an app
-        // without a Dock icon it often does. This form takes the keyboard.
-        NSApp.activate(ignoringOtherApps: true)
-        window.makeKeyAndOrderFront(nil)
-        // Puts the window in front even when macOS has not made DropUp the active app yet.
-        window.orderFrontRegardless()
+        switch openStrategy {
+        case 1:
+            window.makeKeyAndOrderFront(nil)
+            window.orderFrontRegardless()
+            NSApp.activate(ignoringOtherApps: true)
+        case 2:
+            NSRunningApplication.current.activate(options: [.activateIgnoringOtherApps])
+            window.makeKeyAndOrderFront(nil)
+            window.orderFrontRegardless()
+        case 3:
+            window.makeKeyAndOrderFront(nil)
+            window.orderFrontRegardless()
+            NSRunningApplication.current.activate(options: [.activateIgnoringOtherApps])
+        default:
+            NSApp.activate(ignoringOtherApps: true)
+            window.makeKeyAndOrderFront(nil)
+            window.orderFrontRegardless()
+        }
     }
 
     // MARK: NSWindowDelegate
 
     func windowWillClose(_ notification: Notification) {
         guard let closing = notification.object as? NSWindow else { return }
+        switch Self.closeStrategy {
+        case 1:
+            if closing.isKeyWindow, !WindowProbe.otherDropUpWindowIsOnTop(excluding: closing) { NSApp.deactivate() }
+        case 2:
+            if closing.isKeyWindow { NSApp.deactivate() }
+        default: break
+        }
         // Closing Settings, however it happens, throws away unsaved edits: the next open starts from what is saved.
         if closing === settingsWindow { settingsWindow = nil }
         if closing === browseWindow {

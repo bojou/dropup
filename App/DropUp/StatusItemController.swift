@@ -19,6 +19,7 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
     /// Both dots are this wide (edge included) and have a thin white edge, so they stay visible on any menubar background.
     private static let dotSize: CGFloat = 10
     private static let dotEdge: CGFloat = 1
+    static var popoverStrategy = 0 // PROBE-ONLY
     private var clickAwayMonitor: Any?
     private var escapeMonitor: Any?
 
@@ -146,7 +147,11 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
         } else if model.needsOnboarding {
             model.onNeedsOnboarding?()
         } else if let button = statusItem.button {
-            NSApp.activate()
+            switch Self.popoverStrategy {
+            case 1: NSRunningApplication.current.activate(options: [.activateIgnoringOtherApps])
+            case 2: break
+            default: NSApp.activate()
+            }
             popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
             popover.contentViewController?.view.window?.makeKey()
             model.popoverVisibilityChanged(true)
