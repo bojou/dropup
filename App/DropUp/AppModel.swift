@@ -167,11 +167,16 @@ final class AppModel {
         return sourceURLs[id] != nil || row(id)?.resume != nil
     }
 
+    /// Whether sending it again goes on from what is on the server (an interrupted or paused upload, or a failed one
+    /// that has part of its file there), as opposed to starting from the beginning.
+    func resumes(_ id: UUID) -> Bool {
+        guard let item = row(id) else { return false }
+        return item.state == .interrupted || item.state == .paused || item.resume?.hasProgress == true
+    }
+
     /// `Resume` for an upload that has part of its file on the server, `Retry` for one that starts from the beginning.
     func retryTitle(_ id: UUID) -> String {
-        guard let item = row(id) else { return "Retry" }
-        if item.state == .interrupted || item.state == .paused { return "Resume" }
-        return item.resume?.hasProgress == true ? "Resume" : "Retry"
+        resumes(id) ? "Resume" : "Retry"
     }
 
     func retry(_ id: UUID) {

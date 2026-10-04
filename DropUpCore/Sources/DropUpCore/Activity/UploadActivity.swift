@@ -109,6 +109,10 @@ public struct UploadActivity: Equatable, Sendable {
     }
     public var isBusy: Bool { items.contains { !$0.state.isFinished } }
 
+    /// Whether an upload is held by a pause. It is not busy, but the user has it in hand, so the popover goes on
+    /// inviting more files, as it does while uploads run.
+    public var hasPaused: Bool { items.contains { $0.state == .paused } }
+
     /// Overall progress across the current batch: every file dropped since the queue was last idle,
     /// finished ones counting as complete, so the ring never jumps backwards when a file completes.
     public var overallFraction: Double {
