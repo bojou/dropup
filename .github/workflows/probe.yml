@@ -1,0 +1,25 @@
+name: Probe
+on:
+  push:
+    branches: [window-repro2, window-fix-probe]
+jobs:
+  probe:
+    runs-on: macos-15
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - run: |
+          brew install xcodegen
+          xcodegen generate
+      - run: xcodebuild -project DropUp.xcodeproj -scheme DropUp -destination 'platform=macOS' -derivedDataPath build CODE_SIGNING_ALLOWED=NO build 2>&1 | tail -5
+      - name: Run the window test with Prefer tabs set to Always
+        timeout-minutes: 20
+        run: |
+          defaults write -g AppleWindowTabbingMode -string always
+          echo "AppleWindowTabbingMode = $(defaults read -g AppleWindowTabbingMode)"
+          swiftc -o "$RUNNER_TEMP/other-app" scripts/window-test-other-app.swift
+          status=0
+          DROPUP_WINDOW_TEST="$RUNNER_TEMP/other-app" build/Build/Products/Debug/DropUp.app/Contents/MacOS/DropUp > windows.log 2>&1 || status=$?
+          echo "=== WINDOW TEST (exit $status) ==="
+          grep -E '^(SELFTEST|    [0-9]+\.)' windows.log || cat windows.log
+          echo "=== END ==="
