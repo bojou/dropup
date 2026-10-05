@@ -10,9 +10,10 @@ import Glibc
 /// The opener the integration tests use. On macOS it is the real `NetworkByteStreamOpener`, so CI
 /// exercises the shipping FTP transport. Linux has no Network.framework, so there a small blocking-socket
 /// opener stands in; it lets the FTP protocol code be checked against a real server from any machine.
-func makeByteStreamOpener() -> any ByteStreamOpener {
+/// `connectTimeout` replaces the macOS opener's own time limit for making a connection.
+func makeByteStreamOpener(connectTimeout: Double? = nil) -> any ByteStreamOpener {
     #if canImport(Network)
-    NetworkByteStreamOpener()
+    connectTimeout.map { NetworkByteStreamOpener(connectTimeout: $0) } ?? NetworkByteStreamOpener()
     #else
     PosixByteStreamOpener()
     #endif
