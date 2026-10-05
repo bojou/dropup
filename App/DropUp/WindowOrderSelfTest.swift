@@ -219,17 +219,21 @@ enum WindowOrderSelfTest {
                    "opened=\(opened) afterClose=\(closed) | openedOnboarding=\(openedOnboarding) afterClose=\(closedOnboarding)", bad)
         }
 
-        await caseA("browse")
-        await caseB("browse")
-        await caseA("choose")
-        await caseB("choose")
-        await caseVisible()
-        await caseSetup()
+        // A second run with another setting of the system (Prefer tabs when opening documents) only needs the sequences.
+        let quick = ProcessInfo.processInfo.environment["DROPUP_WINDOW_TEST_QUICK"] != nil
+        if !quick {
+            await caseA("browse")
+            await caseB("browse")
+            await caseA("choose")
+            await caseB("choose")
+            await caseVisible()
+            await caseSetup()
+        }
         await closeAll()
 
         let rig = Rig(model: model, windows: windows, status: status)
         await rig.reportedSteps()
-        await rig.sequences()
+        await rig.sequences(only: quick ? 2 : nil)
         if rig.failed { failed = true }
         await closeAll()
         return failed ? 1 : 0
@@ -466,12 +470,12 @@ enum WindowOrderSelfTest {
 
         /// A made-up but fixed sequence of things a person might do, over 2, 3 and 4 windows. Every other sequence also
         /// has windows pulled forward now and then.
-        func sequences() async {
+        func sequences(only count: Int? = nil) async {
             let sets: [[Name]] = [
                 [.settings, .browse], [.browse, .choose], [.settings, .browse, .choose],
                 [.settings, .browse, .onboarding], [.settings, .browse, .choose, .onboarding], [.browse, .choose, .onboarding, .settings],
             ]
-            for (index, names) in sets.enumerated() {
+            for (index, names) in sets.enumerated() where index < (count ?? sets.count) {
                 let moves = Self.sequence(names: names, seed: UInt64(index + 1) &* 7919, length: 12, pulling: index % 2 == 1)
                 await play("sequence \(index + 1) over \(names.map(\.rawValue).joined(separator: ", "))\(index % 2 == 1 ? " with windows pulled forward" : "")", moves)
             }
