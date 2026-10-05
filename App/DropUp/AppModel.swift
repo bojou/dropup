@@ -16,7 +16,7 @@ enum DropPanelState {
 @MainActor
 @Observable
 final class AppModel {
-    private(set) var activity = UploadActivity()
+    var activity = UploadActivity()
     /// Ticks while uploads run and shortly after, so time-based text and the success flash update.
     private(set) var now = Date()
     private(set) var config: ServerConfig?

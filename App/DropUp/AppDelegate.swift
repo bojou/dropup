@@ -13,6 +13,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     func applicationDidFinishLaunching(_ notification: Notification) {
         // First, before anything reads settings: a reinstall must not inherit the old connection.
         InstallReset.reconcile()
+        if ProcessInfo.processInfo.environment["DROPUP_PROBE_LAYOUT"] != nil {
+            LayoutProbe.run(model: model)
+            exit(0)
+        }
         UNUserNotificationCenter.current().delegate = self
         let statusItem = StatusItemController(
             model: model,
