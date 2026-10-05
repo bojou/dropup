@@ -200,8 +200,10 @@ enum ShortcutAlerts {
         alert.informativeText = message
         alert.addButton(withTitle: button)
         alert.addButton(withTitle: "Cancel")
-        NSApp.activate()
-        return alert.runModal() == .alertFirstButtonReturn
+        return WindowOrderKeeper.shared.whileBlocked {
+            NSApp.activate()
+            return alert.runModal() == .alertFirstButtonReturn
+        }
     }
 
     static func offerSettings(title: String, message: String, opening url: URL) {
@@ -210,7 +212,10 @@ enum ShortcutAlerts {
         alert.informativeText = message
         alert.addButton(withTitle: "Open System Settings")
         alert.addButton(withTitle: "Not Now")
-        NSApp.activate()
-        if alert.runModal() == .alertFirstButtonReturn { NSWorkspace.shared.open(url) }
+        let open = WindowOrderKeeper.shared.whileBlocked {
+            NSApp.activate()
+            return alert.runModal() == .alertFirstButtonReturn
+        }
+        if open { NSWorkspace.shared.open(url) }
     }
 }

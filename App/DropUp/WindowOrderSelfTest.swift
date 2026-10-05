@@ -219,14 +219,308 @@ enum WindowOrderSelfTest {
                    "opened=\(opened) afterClose=\(closed) | openedOnboarding=\(openedOnboarding) afterClose=\(closedOnboarding)", bad)
         }
 
-        await caseA("browse")
-        await caseB("browse")
-        await caseA("choose")
-        await caseB("choose")
-        await caseVisible()
-        await caseSetup()
+        // A second run with another setting of the system (Prefer tabs when opening documents) only needs the sequences.
+        let quick = ProcessInfo.processInfo.environment["DROPUP_WINDOW_TEST_QUICK"] != nil
+        if !quick {
+            await caseA("browse")
+            await caseB("browse")
+            await caseA("choose")
+            await caseB("choose")
+            await caseVisible()
+            await caseSetup()
+        }
+        await closeAll()
+
+        let rig = Rig(model: model, windows: windows, status: status)
+        await rig.reportedSteps()
+        await rig.sequences(only: quick ? 2 : nil)
+        if rig.failed { failed = true }
         await closeAll()
         return failed ? 1 : 0
+    }
+
+    // MARK: Sequences
+
+    private enum Name: String, CaseIterable, Comparable {
+        case settings, browse, choose, onboarding
+        static func < (a: Name, b: Name) -> Bool { a.rawValue < b.rawValue }
+    }
+
+    /// What a person does with the windows, one thing at a time.
+    private enum Step: CustomStringConvertible {
+        /// Clicks in another app, which covers every DropUp window.
+        case hide
+        /// Opens a window, or opens one again that is already open: from the popover, and for the setup window from the icon.
+        case open(Name)
+        /// Closes a window with its button (Done in Settings does the same).
+        case close(Name)
+        /// Opens the popover and closes it again without choosing anything.
+        case peek
+
+        var description: String {
+            switch self {
+            case .hide: "hide"
+            case .open(let name): "open \(name.rawValue)"
+            case .close(let name): "close \(name.rawValue)"
+            case .peek: "peek"
+            }
+        }
+    }
+
+    /// Something else brings a window of DropUp forward while a step runs, the way macOS can, whatever the reason:
+    /// the stack has to be put right again.
+    private struct Pull {
+        /// Seconds after the step starts.
+        var after: Double
+        /// `false` only orders the window to the front; `true` also activates the app and asks for the keyboard.
+        var activating: Bool
+    }
+
+    private struct Move {
+        var step: Step
+        /// Seconds to wait before the step, a short time to catch anything that is still going on.
+        var gap: Double
+        var pull: Pull?
+
+        init(_ step: Step, _ gap: Double, pull: Pull? = nil) {
+            self.step = step
+            self.gap = gap
+            self.pull = pull
+        }
+    }
+
+    /// What was seen while a step ran: the places of the windows every 30 ms, and which window was pulled.
+    @MainActor
+    private final class Samples {
+        var list: [(at: Double, places: [Name: String])] = []
+        var running = true
+        var pulled: Name?
+    }
+
+    /// Plays steps against the real windows and checks after each one that only the window that was asked for moved
+    /// forward: every other window of DropUp keeps its place behind the other app, also for a moment in between.
+    @MainActor
+    private final class Rig {
+        let model: AppModel
+        let windows: WindowCoordinator
+        let status: StatusItemController
+        var failed = false
+
+        init(model: AppModel, windows: WindowCoordinator, status: StatusItemController) {
+            self.model = model
+            self.windows = windows
+            self.status = status
+        }
+
+        func window(_ name: Name) -> NSWindow? { windows.windowsForSelfTest[name.rawValue] ?? nil }
+
+        func place(_ name: Name) -> String { WindowOrderSelfTest.place(window(name)) }
+
+        /// The windows that are open and where they are.
+        func places() -> [Name: String] {
+            var result: [Name: String] = [:]
+            for name in Name.allCases where window(name)?.isVisible == true { result[name] = place(name) }
+            return result
+        }
+
+        func describe(_ places: [Name: String]) -> String {
+            places.sorted { $0.key < $1.key }.map { "\($0.key.rawValue)=\($0.value)" }.joined(separator: " ")
+        }
+
+        func reset() async {
+            for name in Name.allCases { window(name)?.close() }
+            await WindowOrderSelfTest.sleep(0.6)
+            await WindowOrderSelfTest.otherAppFront()
+        }
+
+        /// Clicking on the menubar icon: the app becomes the active one if it is not. Done before a step is timed: until
+        /// DropUp does something, a window that comes forward is one the person brought forward.
+        private func prepare(_ step: Step) async {
+            switch step {
+            case .open, .peek:
+                if !NSApp.isActive { await WindowOrderSelfTest.otherAppFront(yielding: true) }
+            case .hide, .close:
+                break
+            }
+        }
+
+        private func perform(_ step: Step) async {
+            switch step {
+            case .hide:
+                await WindowOrderSelfTest.otherAppFront()
+            case .open(.onboarding):
+                windows.showOnboarding()
+            case .open(let name):
+                status.togglePopover()
+                await WindowOrderSelfTest.sleep(0.4)
+                status.selfTestChoose(name.rawValue)
+            case .close(let name):
+                window(name)?.close()
+            case .peek:
+                status.togglePopover()
+                await WindowOrderSelfTest.sleep(0.4)
+                status.togglePopover()
+            }
+        }
+
+        /// Brings a window that is behind the other app forward, as if macOS had.
+        private func pull(_ pull: Pull, requested: Name?, before: [Name: String], samples: Samples) async {
+            try? await Task.sleep(nanoseconds: UInt64(pull.after * 1e9))
+            guard let victim = Name.allCases.first(where: { $0 != requested && before[$0] == "below" && window($0)?.isVisible == true }),
+                  let window = window(victim) else { return }
+            samples.pulled = victim
+            if pull.activating {
+                NSApp.activate(ignoringOtherApps: true)
+                window.makeKeyAndOrderFront(nil)
+            } else {
+                window.orderFrontRegardless()
+            }
+        }
+
+        /// One step. Returns what is wrong, and a line for the trace.
+        private func play(_ move: Move) async -> (problems: [String], line: String) {
+            let step = move.step
+            await WindowOrderSelfTest.sleep(move.gap)
+            let wasActive = NSApp.isActive
+            await prepare(step)
+            let before = places()
+            let started = Date()
+            let samples = Samples()
+            var requested: Name?
+            if case .open(let name) = step { requested = name }
+            var closed: Name?
+            if case .close(let name) = step { closed = name }
+
+            let sampler = Task { @MainActor in
+                while samples.running {
+                    samples.list.append((Date().timeIntervalSince(started), self.places()))
+                    await WindowOrderSelfTest.sleep(0.03)
+                }
+            }
+            var puller: Task<Void, Never>?
+            if let wanted = move.pull {
+                puller = Task { @MainActor in await self.pull(wanted, requested: requested, before: before, samples: samples) }
+            }
+            await perform(step)
+            await puller?.value
+            await WindowOrderSelfTest.sleep(0.6)
+            samples.running = false
+            await sampler.value
+            let after = places()
+
+            var bad: [String] = []
+            for (name, was) in before where name != requested && name != closed {
+                guard let now = after[name] else { bad.append("\(name.rawValue) went away"); continue }
+                if case .hide = step {
+                    if now != "below" { bad.append("\(name.rawValue) was not covered by the other app") }
+                    continue
+                }
+                if now != was { bad.append("\(name.rawValue) was \(was), is now \(now)") }
+                guard was == "below", let first = samples.list.first(where: { $0.places[name] == "ABOVE" }) else { continue }
+                if name == samples.pulled {
+                    // Pulled on purpose: it may show for a moment, but has to be put back at once.
+                    let last = samples.list.last(where: { $0.places[name] == "ABOVE" }) ?? first
+                    if last.at - first.at > 0.4 {
+                        bad.append("\(name.rawValue) was pulled forward and stayed there for \(Int((last.at - first.at) * 1000)) ms")
+                    }
+                } else {
+                    bad.append("\(name.rawValue) came forward for a moment, \(Int(first.at * 1000)) ms in")
+                }
+            }
+            for name in Name.allCases {
+                if let window = window(name), window.isVisible, (window.tabGroup?.windows.count ?? 1) > 1 {
+                    bad.append("\(name.rawValue) became a tab of another window")
+                }
+            }
+            if let requested {
+                if after[requested] != "ABOVE" { bad.append("\(requested.rawValue) did not come forward (\(after[requested] ?? "gone"))") }
+                else if window(requested)?.isKeyWindow != true { bad.append("\(requested.rawValue) did not get the keyboard") }
+            }
+            let pulled = samples.pulled.map { ", pulled \($0.rawValue)" } ?? ""
+            let line = "\(step) after \(String(format: "%.2f", move.gap)) s, active \(wasActive)->\(NSApp.isActive)\(pulled): \(describe(before)) => \(describe(after))"
+            return (bad, line)
+        }
+
+        /// Runs the moves one after another from a clean start and reports one line.
+        func play(_ title: String, _ moves: [Move]) async {
+            await reset()
+            var trace: [String] = []
+            var problems: [String] = []
+            for (index, move) in moves.enumerated() {
+                let result = await play(move)
+                trace.append("    \(index + 1). \(result.line)")
+                for problem in result.problems { problems.append("step \(index + 1) (\(move.step)): \(problem)") }
+            }
+            if !problems.isEmpty { failed = true }
+            print("SELFTEST \(title): \(moves.count) steps -> \(problems.isEmpty ? "PASS" : "FAIL " + problems.joined(separator: "; "))")
+            if !problems.isEmpty { trace.forEach { print($0) } }
+        }
+
+        /// The steps of the report, in both directions, repeated: the one window is open and hidden, the other opens
+        /// and closes, then opens again.
+        func reportedSteps() async {
+            for (first, second) in [(Name.settings, Name.browse), (.browse, .settings)] {
+                for round in 1...3 {
+                    // Waiting a good while before opening again, or hardly any, and once with windows being pulled.
+                    let wait = round == 2 ? 0.1 : 1.2
+                    let pulled: (Double) -> Pull? = { round == 3 ? Pull(after: $0, activating: $0 > 0.1) : nil }
+                    await play("reported steps, \(first.rawValue) hidden then \(second.rawValue) twice (round \(round))", [
+                        Move(.open(first), 0.3), Move(.hide, 0.3), Move(.open(second), 0.5, pull: pulled(0.05)),
+                        Move(.close(second), 0.5, pull: pulled(0.0)), Move(.open(second), wait, pull: pulled(0.3)),
+                        Move(.close(second), 0.5, pull: pulled(0.1)), Move(.hide, 0.2), Move(.open(second), wait, pull: pulled(0.0)),
+                        Move(.close(second), 0.5),
+                    ])
+                }
+            }
+        }
+
+        /// A made-up but fixed sequence of things a person might do, over 2, 3 and 4 windows. Every other sequence also
+        /// has windows pulled forward now and then.
+        func sequences(only count: Int? = nil) async {
+            let sets: [[Name]] = [
+                [.settings, .browse], [.browse, .choose], [.settings, .browse, .choose],
+                [.settings, .browse, .onboarding], [.settings, .browse, .choose, .onboarding], [.browse, .choose, .onboarding, .settings],
+            ]
+            for (index, names) in sets.enumerated() where index < (count ?? sets.count) {
+                let moves = Self.sequence(names: names, seed: UInt64(index + 1) &* 7919, length: 12, pulling: index % 2 == 1)
+                await play("sequence \(index + 1) over \(names.map(\.rawValue).joined(separator: ", "))\(index % 2 == 1 ? " with windows pulled forward" : "")", moves)
+            }
+        }
+
+        private struct Random {
+            var state: UInt64
+            mutating func next(_ limit: Int) -> Int {
+                state = state &* 6364136223846793005 &+ 1442695040888963407
+                return Int((state >> 33) % UInt64(limit))
+            }
+        }
+
+        static func sequence(names: [Name], seed: UInt64, length: Int, pulling: Bool) -> [Move] {
+            var random = Random(state: seed)
+            var open = Set<Name>()
+            var moves: [Move] = []
+            for _ in 0..<length {
+                let step: Step
+                switch random.next(10) {
+                case 0, 1: step = .hide
+                case 2: step = .peek
+                case 3...4 where !open.isEmpty: step = .close(open.sorted()[random.next(open.count)])
+                default: step = .open(names[random.next(names.count)])
+                }
+                switch step {
+                case .open(let name): open.insert(name)
+                case .close(let name): open.remove(name)
+                default: break
+                }
+                let gap = [0.05, 0.4, 1.0][random.next(3)]
+                var pull: Pull?
+                if pulling, random.next(5) < 3 {
+                    if case .hide = step {} else { pull = Pull(after: [0.0, 0.05, 0.3, 0.7][random.next(4)], activating: random.next(2) == 0) }
+                }
+                moves.append(Move(step, gap, pull: pull))
+            }
+            return moves
+        }
     }
 }
 #endif

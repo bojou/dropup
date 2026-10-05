@@ -9,11 +9,11 @@ import DropUpCore
 /// brings the setup window to the front until setup is done, and Settings, Browse and Change Folder open from the
 /// popover, which brings an open one forward instead of making a second.
 ///
-/// Only the window the person asked for comes forward. macOS would bring more: it raises the app's last key window
-/// when the app is activated, and when the window with the keyboard closes it gives the keyboard to the next one and
-/// brings that forward, however many other apps' windows it sat under. So the popover is shown before the app is
-/// activated (see `StatusItemController.togglePopover`), and a window that is covered by other apps is not eligible
-/// for the keyboard while another one closes (`holdBackCoveredWindows`).
+/// Only the window the person asked for comes forward, whichever windows are open and in whatever order they were
+/// opened. macOS would bring more: it raises the app's last key window when the app is activated, and when the window
+/// with the keyboard closes it gives the keyboard to the next one and brings that forward, however many other apps'
+/// windows it sat under. Every way of opening or closing a window goes through `WindowOrderKeeper.begin`, which notes
+/// where the windows are and puts back any that moved without being asked for.
 @MainActor
 final class WindowCoordinator: NSObject, NSWindowDelegate {
     private let model: AppModel
@@ -97,6 +97,9 @@ final class WindowCoordinator: NSObject, NSWindowDelegate {
         window.title = title
         window.styleMask = [.titled, .closable]
         window.isReleasedWhenClosed = false
+        // With "Prefer tabs when opening documents" set to Always, macOS would make a window opened while another of the
+        // app's is open a tab of it, and bring that other window forward along with it.
+        window.tabbingMode = .disallowed
         window.delegate = self
         // Opens on the desktop in use, not on the one the window was left on.
         window.collectionBehavior.insert(.moveToActiveSpace)
@@ -107,47 +110,12 @@ final class WindowCoordinator: NSObject, NSWindowDelegate {
     /// Brings the window to the front, gives it the keyboard and takes it out of the minimized state.
     private func present(_ window: NSWindow?) {
         guard let window else { return }
+        WindowOrderKeeper.shared.begin(asking: window)
         if window.isMiniaturized { window.deminiaturize(nil) }
         (window as? DropUpWindow)?.stopHoldingBack()
         Self.raise(window)
         // The activation can land after the window was ordered in, so ask once more.
         Task { @MainActor in Self.raise(window) }
-    }
-
-    /// Keeps the windows that are open but covered by other apps from taking over when `closing` goes, which would
-    /// bring them to the front. Windows in plain view are left as they are and still get the keyboard.
-    private func holdBackCoveredWindows(except closing: NSWindow) {
-        let others = [onboardingWindow, settingsWindow, browseWindow, chooseWindow]
-            .compactMap { $0 as? DropUpWindow }
-            .filter { $0 !== closing && $0.isVisible }
-        guard !others.isEmpty else { return }
-        let stack = Self.windowsOnScreen()
-        // The window server counts from the top left of the main screen, AppKit from the bottom left.
-        let screenHeight = NSScreen.screens.first?.frame.height ?? 0
-        for window in others {
-            let frame = CGRect(x: window.frame.minX, y: screenHeight - window.frame.maxY, width: window.frame.width, height: window.frame.height)
-            if WindowCover.isCovered(windowNumber: window.windowNumber, frame: frame, ownProcess: getpid(), stack: stack) {
-                window.holdBack(for: Self.holdBackTime)
-            }
-        }
-    }
-
-    /// Long enough for macOS to be done choosing which window gets the keyboard.
-    private static let holdBackTime: TimeInterval = 0.6
-
-    /// The windows on screen, front to back. Only ordinary windows: the menubar, the Dock and other layers of the
-    /// window server are not windows that cover anything of ours. Names and contents are not read.
-    private static func windowsOnScreen() -> [StackedWindow] {
-        let list = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] ?? []
-        return list.compactMap { entry in
-            guard (entry[kCGWindowLayer as String] as? NSNumber)?.intValue == 0,
-                  (entry[kCGWindowAlpha as String] as? NSNumber)?.doubleValue ?? 1 > 0,
-                  let number = (entry[kCGWindowNumber as String] as? NSNumber)?.intValue,
-                  let owner = (entry[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value,
-                  let bounds = entry[kCGWindowBounds as String] as? [String: Any],
-                  let frame = CGRect(dictionaryRepresentation: bounds as CFDictionary) else { return nil }
-            return StackedWindow(number: number, ownerProcess: owner, frame: frame)
-        }
     }
 
     private static func raise(_ window: NSWindow) {
@@ -163,7 +131,7 @@ final class WindowCoordinator: NSObject, NSWindowDelegate {
 
     func windowWillClose(_ notification: Notification) {
         guard let closing = notification.object as? NSWindow else { return }
-        holdBackCoveredWindows(except: closing)
+        WindowOrderKeeper.shared.begin(closing: closing)
         // Closing Settings, however it happens, throws away unsaved edits: the next open starts from what is saved.
         if closing === settingsWindow { settingsWindow = nil }
         if closing === browseWindow {
@@ -181,23 +149,4 @@ final class WindowCoordinator: NSObject, NSWindowDelegate {
             chooseModel = nil
         }
     }
-}
-
-/// A window that can be told not to take over for a moment. macOS skips a window that cannot become key or main when it
-/// looks for the one to give the keyboard to after another window closes.
-final class DropUpWindow: NSWindow {
-    private var heldBackUntil = Date.distantPast
-
-    func holdBack(for seconds: TimeInterval) {
-        heldBackUntil = Date().addingTimeInterval(seconds)
-    }
-
-    func stopHoldingBack() {
-        heldBackUntil = .distantPast
-    }
-
-    private var isHeldBack: Bool { Date() < heldBackUntil }
-
-    override var canBecomeKey: Bool { !isHeldBack && super.canBecomeKey }
-    override var canBecomeMain: Bool { !isHeldBack && super.canBecomeMain }
 }

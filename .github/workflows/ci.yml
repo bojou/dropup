@@ -59,14 +59,30 @@ jobs:
           kill "$PID" || true
 
       # Opening or closing one of DropUp's windows must never bring another one of them forward. The debug build tests
-      # itself with a stand-in for another app in front (App/DropUp/WindowOrderSelfTest.swift).
+      # itself with a stand-in for another app in front (App/DropUp/WindowOrderSelfTest.swift): once with the system's
+      # settings as they are, and once more with "Prefer tabs when opening documents" set to Always, which makes macOS
+      # merge windows into tabs.
       - name: Check windows keep their place
-        timeout-minutes: 5
+        timeout-minutes: 25
         run: |
           swiftc -o "$RUNNER_TEMP/other-app" scripts/window-test-other-app.swift
+          export DROPUP_WINDOW_TEST="$RUNNER_TEMP/other-app"
+          run_test() {
+            set +e
+            build/Build/Products/Debug/DropUp.app/Contents/MacOS/DropUp 2>&1 | tee "$RUNNER_TEMP/$1.log" | grep --line-buffered -E '^(SELFTEST|    [0-9]+\.)'
+            local code=${PIPESTATUS[0]}
+            set -e
+            grep -q '^SELFTEST' "$RUNNER_TEMP/$1.log" || cat "$RUNNER_TEMP/$1.log"
+            return $code
+          }
           status=0
-          DROPUP_WINDOW_TEST="$RUNNER_TEMP/other-app" build/Build/Products/Debug/DropUp.app/Contents/MacOS/DropUp > windows.log 2>&1 || status=$?
-          grep '^SELFTEST' windows.log || cat windows.log
+          echo "Prefer tabs: as the system has it"
+          run_test windows || status=1
+          defaults write -g AppleWindowTabbingMode -string always
+          echo "Prefer tabs: Always"
+          export DROPUP_WINDOW_TEST_QUICK=1
+          run_test windows-tabs || status=1
+          defaults delete -g AppleWindowTabbingMode || true
           exit $status
 
       # The same signing and appcast steps a release runs, with a throwaway key made here, so a change to them

@@ -13,6 +13,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     func applicationDidFinishLaunching(_ notification: Notification) {
         // First, before anything reads settings: a reinstall must not inherit the old connection.
         InstallReset.reconcile()
+        // None of DropUp's windows is a document: they are never to be merged into one window with tabs, whatever the
+        // setting "Prefer tabs when opening documents" says.
+        NSWindow.allowsAutomaticWindowTabbing = false
         UNUserNotificationCenter.current().delegate = self
         let statusItem = StatusItemController(
             model: model,
