@@ -1,0 +1,45 @@
+name: Probe
+on:
+  push:
+    branches: [core-stall-probe]
+jobs:
+  core:
+    strategy:
+      fail-fast: false
+      matrix:
+        mode: [pipe, file, pipe-quiet, file-quiet]
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Start test FTP and SFTP servers
+        run: |
+          python3 -m venv "$RUNNER_TEMP/venv"
+          "$RUNNER_TEMP/venv/bin/pip" install pyftpdlib asyncssh bcrypt
+          "$RUNNER_TEMP/venv/bin/python" scripts/test-servers.py > "$RUNNER_TEMP/servers.log" 2>&1 &
+          for _ in $(seq 1 30); do
+            grep -q '^ready' "$RUNNER_TEMP/servers.log" && break
+            sleep 1
+          done
+          grep '^export' "$RUNNER_TEMP/servers.log" | sed 's/^export //' >> "$GITHUB_ENV"
+      - name: Build tests
+        run: swift build --package-path DropUpCore --build-tests 2>&1 | tail -3
+      - name: Test
+        run: |
+          sysctl -n hw.ncpu
+          case "${{ matrix.mode }}" in
+            *quiet) export DROPUP_IT_QUIET=1 ;;
+          esac
+          for round in 1 2 3; do
+            echo "== round $round"
+            set +e
+            case "${{ matrix.mode }}" in
+              pipe*) swift test --package-path DropUpCore --skip-build 2>&1 | tee "$RUNNER_TEMP/out-$round.log" > /dev/stderr ;;
+              file*) swift test --package-path DropUpCore --skip-build > "$RUNNER_TEMP/out-$round.log" 2>&1 ;;
+            esac
+            set -e
+            grep -E '✘|Test run with' "$RUNNER_TEMP/out-$round.log" | head -8
+            echo "fastest:"; grep -oE 'passed after [0-9.]+' "$RUNNER_TEMP/out-$round.log" | awk '{print $3}' | sort -n | head -3 | tr '\n' ' '; echo
+            echo "first finished:"; grep -m3 -E ' passed after ' "$RUNNER_TEMP/out-$round.log"
+            echo "unreachable:"; grep -E 'unreachablePortFailsFast.*(passed|failed|Expectation)' "$RUNNER_TEMP/out-$round.log" | head -3
+            echo "lines: $(wc -l < "$RUNNER_TEMP/out-$round.log")"
+          done
