@@ -13,20 +13,21 @@ import DropUpCore
 ///
 ///  - keeps the app's windows that are behind other apps from being handed the keyboard (they cannot become key or main,
 ///    which is how macOS picks the window to bring forward), and
-///  - when anything happens that can mean a window moved (a window became key or main, appeared on screen, or the app
-///    became active, and at a few fixed moments), puts every window that came in front of a window of another app that
-///    was in front of it before back behind that window. The window that was asked for is the exception, and so is a
-///    window the person clicks.
+///  - every `lookInterval`, and at once when anything happens that can mean a window moved (a window became key or main,
+///    appeared on screen, or the app became active), puts every window that came in front of a window of another app
+///    that was in front of it before back behind that window. The window that was asked for is the exception, and so is
+///    a window the person clicks.
 ///
-/// It does nothing between actions, and only watches for `watchTime` after each one.
+/// It does nothing between actions, and only watches for `watchTime` after each one. When the person switches to
+/// another app meanwhile, what was asked for before no longer counts: the next action starts afresh.
 @MainActor
 final class WindowOrderKeeper {
     static let shared = WindowOrderKeeper()
 
     /// How long after an action macOS may still be moving windows around.
     static let watchTime: TimeInterval = 1.5
-    /// When, within that time, the stack is looked at even if nothing was noticed.
-    private static let checkTimes: [TimeInterval] = [0.05, 0.2, 0.5, 1.0, 1.4]
+    /// How often, within that time, the stack is looked at even if nothing was noticed.
+    private static let lookInterval: TimeInterval = 0.05
 
     private struct Asked {
         weak var window: NSWindow?
@@ -35,6 +36,8 @@ final class WindowOrderKeeper {
     private var baseline: [StackedWindow] = []
     private var asked: [Asked] = []
     private var watchUntil: TimeInterval = 0
+    /// Alerts that are up.
+    private var blocking = 0
     private var generation = 0
     private var lastLook: TimeInterval = 0
     private var observers: [NSObjectProtocol] = []
@@ -47,7 +50,7 @@ final class WindowOrderKeeper {
     /// The app is about to do something that can move windows: open or close one, show or hide the popover, or show an
     /// alert. `window` is the one the person asked for, which comes forward; `closing` is one that is going away.
     func begin(asking window: NSWindow? = nil, closing: NSWindow? = nil) {
-        if !isWatching {
+        if !isWatching || baseline.isEmpty {
             baseline = Self.windowsOnScreen()
             asked = []
         }
@@ -63,7 +66,10 @@ final class WindowOrderKeeper {
     func whileBlocked<T>(_ body: () -> T) -> T {
         begin()
         watchUntil = .infinity
+        blocking += 1
+        holdBackWindowsBehindOtherApps(except: [])
         let result = body()
+        blocking -= 1
         watchUntil = Self.now + Self.watchTime
         holdBackWindowsBehindOtherApps(except: [])
         scheduleLooks()
@@ -110,8 +116,11 @@ final class WindowOrderKeeper {
         for restore in stillForward {
             (NSApp.window(withWindowNumber: restore.window) as? DropUpWindow)?.orderBack(nil)
         }
-        // The window that was asked for keeps the keyboard.
-        if let wanted = asked.last?.window, wanted.isVisible, !wanted.isKeyWindow, wanted.canBecomeKey { wanted.makeKey() }
+        // The window that was asked for keeps the keyboard, unless the popover or an alert has it.
+        if blocking == 0, NSApp.modalWindow == nil, NSApp.keyWindow == nil || NSApp.keyWindow is DropUpWindow,
+           let wanted = asked.last?.window, wanted.isVisible, !wanted.isKeyWindow, wanted.canBecomeKey {
+            wanted.makeKey()
+        }
     }
 
     private func noticed() {
@@ -120,24 +129,34 @@ final class WindowOrderKeeper {
         look()
     }
 
+    /// Looks every `lookInterval` for `watchTime`. While an alert is up, that is only at the start: then only what is
+    /// noticed is looked at, until the alert is answered.
     private func scheduleLooks() {
         generation += 1
         let mine = generation
-        for time in Self.checkTimes {
-            Task { @MainActor in
-                try? await Task.sleep(nanoseconds: UInt64(time * 1e9))
+        let lookUntil = Self.now + Self.watchTime
+        Task { @MainActor in
+            while self.generation == mine, Self.now < lookUntil {
+                try? await Task.sleep(nanoseconds: UInt64(Self.lookInterval * 1e9))
                 guard self.generation == mine else { return }
                 self.look()
             }
-        }
-        // Nothing is kept or watched once it is over.
-        Task { @MainActor in
-            try? await Task.sleep(nanoseconds: UInt64((Self.watchTime + 0.1) * 1e9))
+            // Nothing is kept or watched once it is over.
+            try? await Task.sleep(nanoseconds: UInt64(0.1 * 1e9))
             guard self.generation == mine, !self.isWatching else { return }
             self.stopObserving()
             self.asked = []
             self.baseline = []
         }
+    }
+
+    /// The person went to another app: what they asked for is done with, and whatever DropUp does next starts from the
+    /// windows as they are then. While an alert is up, the alert is still waiting for them, so that stays as it is.
+    private func otherAppTookOver() {
+        guard blocking == 0 else { return }
+        asked = []
+        baseline = []
+        for window in NSApp.windows.compactMap({ $0 as? DropUpWindow }) { window.stopHoldingBack() }
     }
 
     // MARK: Noticing
@@ -154,6 +173,9 @@ final class WindowOrderKeeper {
                 MainActor.assumeIsolated { self?.noticed() }
             }
         }
+        observers.append(center.addObserver(forName: NSApplication.didResignActiveNotification, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.otherAppTookOver() }
+        })
         // A click on one of the app's windows is the person asking for it, and macOS brings it forward.
         clickMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown, .otherMouseDown]) { [weak self] event in
             MainActor.assumeIsolated {

@@ -333,11 +333,15 @@ enum WindowOrderSelfTest {
             await WindowOrderSelfTest.otherAppFront()
         }
 
-        /// Clicking on the menubar icon: the app becomes the active one if it is not.
-        func openPopover() async {
-            if !NSApp.isActive { await WindowOrderSelfTest.otherAppFront(yielding: true) }
-            status.togglePopover()
-            await WindowOrderSelfTest.sleep(0.4)
+        /// Clicking on the menubar icon: the app becomes the active one if it is not. Done before a step is timed: until
+        /// DropUp does something, a window that comes forward is one the person brought forward.
+        private func prepare(_ step: Step) async {
+            switch step {
+            case .open, .peek:
+                if !NSApp.isActive { await WindowOrderSelfTest.otherAppFront(yielding: true) }
+            case .hide, .close:
+                break
+            }
         }
 
         private func perform(_ step: Step) async {
@@ -345,15 +349,16 @@ enum WindowOrderSelfTest {
             case .hide:
                 await WindowOrderSelfTest.otherAppFront()
             case .open(.onboarding):
-                if !NSApp.isActive { await WindowOrderSelfTest.otherAppFront(yielding: true) }
                 windows.showOnboarding()
             case .open(let name):
-                await openPopover()
+                status.togglePopover()
+                await WindowOrderSelfTest.sleep(0.4)
                 status.selfTestChoose(name.rawValue)
             case .close(let name):
                 window(name)?.close()
             case .peek:
-                await openPopover()
+                status.togglePopover()
+                await WindowOrderSelfTest.sleep(0.4)
                 status.togglePopover()
             }
         }
@@ -376,8 +381,9 @@ enum WindowOrderSelfTest {
         private func play(_ move: Move) async -> (problems: [String], line: String) {
             let step = move.step
             await WindowOrderSelfTest.sleep(move.gap)
-            let before = places()
             let wasActive = NSApp.isActive
+            await prepare(step)
+            let before = places()
             let started = Date()
             let samples = Samples()
             var requested: Name?
