@@ -97,6 +97,9 @@ final class WindowCoordinator: NSObject, NSWindowDelegate {
         window.title = title
         window.styleMask = [.titled, .closable]
         window.isReleasedWhenClosed = false
+        // With "Prefer tabs when opening documents" set to Always, macOS would make a window opened while another of the
+        // app's is open a tab of it, and bring that other window forward along with it.
+        window.tabbingMode = .disallowed
         window.delegate = self
         // Opens on the desktop in use, not on the one the window was left on.
         window.collectionBehavior.insert(.moveToActiveSpace)

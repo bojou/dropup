@@ -417,6 +417,11 @@ enum WindowOrderSelfTest {
                     bad.append("\(name.rawValue) came forward for a moment, \(Int(first.at * 1000)) ms in")
                 }
             }
+            for name in Name.allCases {
+                if let window = window(name), window.isVisible, (window.tabGroup?.windows.count ?? 1) > 1 {
+                    bad.append("\(name.rawValue) became a tab of another window")
+                }
+            }
             if let requested {
                 if after[requested] != "ABOVE" { bad.append("\(requested.rawValue) did not come forward (\(after[requested] ?? "gone"))") }
                 else if window(requested)?.isKeyWindow != true { bad.append("\(requested.rawValue) did not get the keyboard") }
