@@ -35,6 +35,36 @@ struct NamingAndStoreTests {
         #expect(decoded.recentLimit == 10)
     }
 
+    @Test func theDropZoneSizeStartsAtDefaultAndEarlierPreferencesKeepIt() throws {
+        #expect(Preferences().dropZoneSize == .standard)
+        let old = Data(#"{"playSound":true,"recentLimit":25}"#.utf8)
+        let decoded = try JSONDecoder().decode(Preferences.self, from: old)
+        #expect(decoded.dropZoneSize == .standard)
+        #expect(decoded.recentLimit == 25)
+        // A value from a version that does not exist yet falls back instead of losing every other setting.
+        let unknown = Data(#"{"dropZoneSize":"huge","playSound":true}"#.utf8)
+        let fallback = try JSONDecoder().decode(Preferences.self, from: unknown)
+        #expect(fallback.dropZoneSize == .standard)
+        #expect(fallback.playSound)
+    }
+
+    @Test(arguments: DropZoneSize.allCases)
+    func theDropZoneSizeIsStoredAndTheOtherSettingsAreLeftAlone(zone: DropZoneSize) throws {
+        let suite = "DropUpCoreTests-\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+
+        let settings = UserDefaultsSettingsStore(defaults: defaults)
+        var preferences = Preferences(conflictPolicy: .replace, playSound: true, recentLimit: 25, hideRecentNames: true)
+        preferences.dropZoneSize = zone
+        try settings.savePreferences(preferences)
+
+        let loaded = settings.loadPreferences()
+        #expect(loaded == preferences)
+        #expect(loaded.dropZoneSize == zone)
+        #expect(loaded.conflictPolicy == .replace && loaded.hideRecentNames && loaded.recentLimit == 25)
+    }
+
     @Test func userDefaultsStoresRoundTrip() throws {
         let suite = "DropUpCoreTests-\(UUID().uuidString)"
         let defaults = try #require(UserDefaults(suiteName: suite))

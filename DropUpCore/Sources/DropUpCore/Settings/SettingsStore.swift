@@ -28,6 +28,8 @@ public struct Preferences: Codable, Equatable, Sendable {
     public var hideRecentNames: Bool
     /// The global keyboard shortcuts (Settings > Shortcuts). All off until the user turns one on.
     public var shortcuts: ShortcutSettings
+    /// The size of the drop panel and of the popover's drop area. Preferences saved before it existed get the standard size.
+    public var dropZoneSize: DropZoneSize
 
     public static let recentLimitOptions = [5, 10, 25, 50]
     public static let recentClearAmountRange = 1...999
@@ -41,7 +43,8 @@ public struct Preferences: Codable, Equatable, Sendable {
         recentClearAmount: Int = 2,
         recentClearUnit: RecentClearUnit = .hours,
         hideRecentNames: Bool = false,
-        shortcuts: ShortcutSettings = ShortcutSettings()
+        shortcuts: ShortcutSettings = ShortcutSettings(),
+        dropZoneSize: DropZoneSize = .standard
     ) {
         self.conflictPolicy = conflictPolicy
         self.notifyWhenDone = notifyWhenDone
@@ -52,6 +55,7 @@ public struct Preferences: Codable, Equatable, Sendable {
         self.recentClearUnit = recentClearUnit
         self.hideRecentNames = hideRecentNames
         self.shortcuts = shortcuts
+        self.dropZoneSize = dropZoneSize
     }
 
     /// The counts the Keep picker offers: the fixed ones, plus the saved count when an earlier version let it be
@@ -93,6 +97,7 @@ public struct Preferences: Codable, Equatable, Sendable {
         recentClearUnit = (try? container.decode(RecentClearUnit.self, forKey: .recentClearUnit)) ?? defaults.recentClearUnit
         hideRecentNames = (try? container.decode(Bool.self, forKey: .hideRecentNames)) ?? defaults.hideRecentNames
         shortcuts = (try? container.decode(ShortcutSettings.self, forKey: .shortcuts)) ?? defaults.shortcuts
+        dropZoneSize = (try? container.decode(DropZoneSize.self, forKey: .dropZoneSize)) ?? defaults.dropZoneSize
     }
 }
 

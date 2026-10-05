@@ -280,6 +280,14 @@ private struct GeneralSettings: View {
                 if let loginError { Text(loginError).font(.callout).foregroundStyle(.red) }
             }
             Section {
+                Picker("Drop zone size", selection: preference(\.dropZoneSize)) {
+                    Text("Small").tag(DropZoneSize.small)
+                    Text("Default").tag(DropZoneSize.standard)
+                    Text("Large").tag(DropZoneSize.large)
+                }
+                .pickerStyle(.segmented)
+            }
+            Section {
                 Toggle("Show a notification", isOn: preference(\.notifyWhenDone))
                 Toggle("Play a sound", isOn: preference(\.playSound))
             } header: {
