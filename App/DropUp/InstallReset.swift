@@ -21,13 +21,16 @@ enum InstallReset {
         guard state == .legacySettings, let config else { return }
 
         // Settings from a version before this check existed. An update and a reinstall look the same, so ask.
-        NSApp.activate()
         let alert = NSAlert()
         alert.messageText = "Keep your DropUp settings?"
         alert.informativeText = "DropUp found a saved connection (\(config.transferProtocol.rawValue.uppercased()) · \(config.host)) from an earlier version. If you just reinstalled DropUp and want a clean start, choose Start Fresh."
         alert.addButton(withTitle: "Keep Settings")
         alert.addButton(withTitle: "Start Fresh")
-        if alert.runModal() == .alertFirstButtonReturn {
+        let keep = WindowOrderKeeper.shared.whileBlocked {
+            NSApp.activate()
+            return alert.runModal() == .alertFirstButtonReturn
+        }
+        if keep {
             FreshInstall.adoptLegacy(marker: marker, defaults: defaults)
         } else {
             FreshInstall.startFresh(marker: marker, defaults: defaults, wipe: wipe)

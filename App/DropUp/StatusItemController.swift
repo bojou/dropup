@@ -146,6 +146,7 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
         } else if model.needsOnboarding {
             model.onNeedsOnboarding?()
         } else if let button = statusItem.button {
+            WindowOrderKeeper.shared.begin()
             popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
             popover.contentViewController?.view.window?.makeKey()
             // After the popover is up and has the keyboard: activating raises the app's key window, and activating
@@ -208,26 +209,36 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
     #endif
 
     private func openSettings() {
+        WindowOrderKeeper.shared.begin()
         popover.performClose(nil)
         onOpenSettings()
     }
 
     private func openBrowse() {
+        WindowOrderKeeper.shared.begin()
         popover.performClose(nil)
         onOpenBrowse()
     }
 
     private func openChooseFolder() {
+        WindowOrderKeeper.shared.begin()
         popover.performClose(nil)
         onChooseFolder()
     }
 
     private func openUpdate() {
+        WindowOrderKeeper.shared.begin()
         popover.performClose(nil)
         model.updates.showAvailableUpdate()
     }
 
+    func popoverWillClose(_ notification: Notification) {
+        // When the popover goes, macOS hands the keyboard to another window of the app, and may bring it forward.
+        WindowOrderKeeper.shared.begin()
+    }
+
     func popoverDidClose(_ notification: Notification) {
+        WindowOrderKeeper.shared.begin()
         stopWatchingForDismissal()
         model.popoverVisibilityChanged(false)
         render()
