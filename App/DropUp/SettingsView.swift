@@ -2,7 +2,7 @@ import SwiftUI
 import DropUpCore
 
 /// The tabs of the Settings window, in the order they are shown.
-private enum SettingsTab: CaseIterable {
+enum SettingsTab: CaseIterable {
     case connection, general, shortcuts
 
     var title: String {
@@ -73,7 +73,7 @@ struct SettingsView: View {
 
 /// The row of tabs: an icon above its name, the chosen one in a rounded tile with the accent colour, the others grey
 /// with a light tint under the pointer.
-private struct SettingsTabBar: View {
+struct SettingsTabBar: View {
     @Binding var selection: SettingsTab
 
     var body: some View {
