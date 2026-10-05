@@ -30,6 +30,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             windows.showOnboarding()
         }
         model.shortcuts.start()
+        if ProcessInfo.processInfo.environment["DROPUP_PROBE"] != nil {
+            Task { @MainActor in
+                try? await Task.sleep(nanoseconds: 1_500_000_000)
+                TimingProbe.run(model: model)
+                print("PROBE done")
+                exit(0)
+            }
+        }
         #if DEBUG
         // CI's test of the windows (WindowOrderSelfTest.swift).
         if let helper = ProcessInfo.processInfo.environment["DROPUP_WINDOW_TEST"] {
