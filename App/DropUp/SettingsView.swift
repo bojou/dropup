@@ -1,32 +1,49 @@
 import SwiftUI
 import DropUpCore
 
+/// The tabs of the Settings window, in the order they are shown.
+private enum SettingsTab: CaseIterable {
+    case connection, general, shortcuts
+
+    var title: String {
+        switch self {
+        case .connection: "Connection"
+        case .general: "General"
+        case .shortcuts: "Shortcuts"
+        }
+    }
+
+    /// SF Symbols that exist since macOS 11, so on every macOS DropUp runs on.
+    var symbol: String {
+        switch self {
+        case .connection: "network"
+        case .general: "gearshape"
+        case .shortcuts: "command"
+        }
+    }
+}
+
 /// Settings: a Connection tab for the server, a General tab for most things and a Shortcuts tab for the global keys.
-/// Same window size and chrome as onboarding, so the two read as one app.
+/// The tabs are a row of icons with their names below, at the top of the window.
 struct SettingsView: View {
-    static let size = CGSize(width: 600, height: 460)
+    /// The height of the tab row, its divider included.
+    static let tabBarHeight: CGFloat = 71
+    /// What each tab has to itself below the row.
+    static let contentHeight: CGFloat = 409
+    static let size = CGSize(width: 600, height: tabBarHeight + contentHeight)
 
     let model: AppModel
     /// Closes the Settings window.
     let close: () -> Void
-    @State private var tab = Tab.general
+    @State private var tab = SettingsTab.general
     /// The tabs that have been shown. A tab is built the first time it is opened and kept from then on, so opening
     /// Settings builds only the one that shows, and unsaved edits on Connection still survive a peek at the others.
-    @State private var visited: Set<Tab> = [.general]
-
-    private enum Tab { case connection, general, shortcuts }
+    @State private var visited: Set<SettingsTab> = [.general]
 
     var body: some View {
         VStack(spacing: 0) {
-            Picker("", selection: Binding(get: { tab }, set: { tab = $0; visited.insert($0) })) {
-                Text("Connection").tag(Tab.connection)
-                Text("General").tag(Tab.general)
-                Text("Shortcuts").tag(Tab.shortcuts)
-            }
-            .pickerStyle(.segmented)
-            .labelsHidden()
-            .frame(width: 330)
-            .padding(.vertical, 14)
+            SettingsTabBar(selection: Binding(get: { tab }, set: { tab = $0; visited.insert($0) }))
+                .frame(height: Self.tabBarHeight - 1)
             Divider()
             // A tab stays alive once it has been shown, so unsaved edits on Connection survive a peek at the others.
             ZStack {
@@ -51,6 +68,53 @@ struct SettingsView: View {
             }
         }
         .frame(width: Self.size.width, height: Self.size.height)
+    }
+}
+
+/// The row of tabs: an icon above its name, the chosen one in a rounded tile with the accent colour, the others grey
+/// with a light tint under the pointer.
+private struct SettingsTabBar: View {
+    @Binding var selection: SettingsTab
+
+    var body: some View {
+        HStack(spacing: 6) {
+            ForEach(SettingsTab.allCases, id: \.self) { tab in
+                SettingsTabButton(tab: tab, isSelected: selection == tab) { selection = tab }
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Settings sections")
+    }
+}
+
+private struct SettingsTabButton: View {
+    let tab: SettingsTab
+    let isSelected: Bool
+    let action: () -> Void
+    @State private var isHovering = false
+
+    private let shape = RoundedRectangle(cornerRadius: 9, style: .continuous)
+
+    var body: some View {
+        Button(action: action) {
+            VStack(spacing: 4) {
+                Image(systemName: tab.symbol)
+                    .font(.system(size: 20))
+                    .frame(height: 24)
+                Text(tab.title)
+                    .font(.system(size: 11, weight: .medium))
+            }
+            .foregroundStyle(isSelected ? Color.accentColor : Color.secondary)
+            .frame(width: 86, height: 54)
+            .background(shape.fill(isSelected ? Color.primary.opacity(0.09) : isHovering ? Color.primary.opacity(0.05) : Color.clear))
+            .overlay(shape.strokeBorder(Color.primary.opacity(isSelected ? 0.1 : 0), lineWidth: 1))
+            .contentShape(shape)
+        }
+        .buttonStyle(.plain)
+        .onHover { isHovering = $0 }
+        .accessibilityLabel(tab.title)
+        .accessibilityAddTraits(isSelected ? .isSelected : [])
     }
 }
 
