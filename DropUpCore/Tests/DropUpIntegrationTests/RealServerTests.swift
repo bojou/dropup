@@ -310,13 +310,18 @@ struct RealServerTests {
     func unreachablePortFailsFast(_ transferProtocol: TransferProtocol) async throws {
         var unreachable = config(transferProtocol)
         unreachable.port = 1
-        let browser = ServerBrowser(connectors: connectors())
+        // A connection that is not refused would be waited for for two minutes; a refused one has to fail long before
+        // that. How long before also depends on the tests running alongside, which can hold this one up for seconds.
+        let browser = ServerBrowser(connectors: IntegrationConnectors(
+            ftp: FTPConnector(opener: makeByteStreamOpener(connectTimeout: 120)),
+            sftp: SFTPConnector(hostKeys: InMemoryHostKeyStore(), connectTimeout: 120)
+        ))
 
         let started = Date()
         await #expect(throws: UploaderError.self) {
             _ = try await browser.testConnection(unreachable, password: "secret")
         }
-        #expect(Date().timeIntervalSince(started) < 10)
+        #expect(Date().timeIntervalSince(started) < 60)
     }
 
     @Test(.enabled(if: RealServerTests.enabled))
