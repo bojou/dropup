@@ -227,6 +227,17 @@ enum WindowOrderSelfTest {
         await caseSetup()
         await closeAll()
 
+        // EXPERIMENT (probe only): can DropUp put its own window behind another app's window?
+        await closeAll()
+        open("settings"); await sleep(0.8)
+        print("SELFTEST EXPERIMENT settings after open: \(place("settings")) \(keyState("settings"))")
+        window("settings")?.order(.below, relativeTo: otherApp); await sleep(0.4)
+        print("SELFTEST EXPERIMENT order(.below, relativeTo: the other app's window): \(place("settings")) \(keyState("settings")) active=\(NSApp.isActive)")
+        open("settings"); await sleep(0.8)
+        window("settings")?.orderBack(nil); await sleep(0.4)
+        print("SELFTEST EXPERIMENT orderBack: \(place("settings")) \(keyState("settings")) active=\(NSApp.isActive)")
+        await closeAll()
+
         let rig = Rig(model: model, windows: windows, status: status)
         await rig.reportedSteps()
         await rig.sequences()
