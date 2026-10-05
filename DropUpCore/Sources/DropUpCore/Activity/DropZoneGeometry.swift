@@ -3,11 +3,47 @@ import Foundation
 import CoreGraphics
 #endif
 
+/// How big the drop zone is: the panel that opens under the menubar icon and the drop area in the popover.
+/// `standard` is the size DropUp always had, and the Settings label for it is "Default".
+public enum DropZoneSize: String, Codable, CaseIterable, Sendable {
+    case small
+    case standard
+    case large
+
+    /// Everything about the drop zone, its size and what is drawn in it, is the standard size times this.
+    public var scale: CGFloat {
+        switch self {
+        case .small: 0.8
+        case .standard: 1
+        case .large: 1.25
+        }
+    }
+
+    /// A length or font size from the standard layout, scaled to this size and whole points. Text does not go below
+    /// `minimum`, so it stays readable at the small size.
+    public func scaled(_ value: CGFloat, minimum: CGFloat = 0) -> CGFloat {
+        max((value * scale).rounded(), minimum)
+    }
+}
+
 /// Where the large drop panel appears and when it should. Pure geometry in AppKit screen coordinates
 /// (origin bottom-left), so it can be tested without a display.
 public enum DropZoneGeometry {
-    /// Size of the panel in points. **The one place to tune it**: the design review thought 236 × 196 may be a bit big.
+    /// Size of the panel in points at the standard size; the other sizes are this times `DropZoneSize.scale`.
     public static let panelSize = CGSize(width: 236, height: 196)
+
+    /// The drop area in the popover when nothing is uploading, at the standard size. Its width is the popover's.
+    public static let popoverDropAreaHeight: CGFloat = 148
+
+    /// The panel's size at `size`.
+    public static func panelSize(for size: DropZoneSize) -> CGSize {
+        CGSize(width: size.scaled(panelSize.width), height: size.scaled(panelSize.height))
+    }
+
+    /// The height of the popover's drop area at `size`.
+    public static func popoverDropAreaHeight(for size: DropZoneSize) -> CGFloat {
+        size.scaled(popoverDropAreaHeight)
+    }
 
     /// How close, in points, a dragged file must get to the menubar icon before the panel opens.
     public static let proximityRadius: CGFloat = 150

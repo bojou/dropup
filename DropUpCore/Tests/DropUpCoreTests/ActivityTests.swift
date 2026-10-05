@@ -326,6 +326,91 @@ struct DropZoneGeometryTests {
         let smaller = DropZoneGeometry.panelFrame(iconFrame: icon, visibleScreenFrame: screen, size: CGSize(width: 180, height: 140))
         #expect(smaller.size == CGSize(width: 180, height: 140))
     }
+
+    // MARK: Drop zone size
+
+    @Test func theDefaultSizeIsTodaysSizeExactly() {
+        #expect(DropZoneGeometry.panelSize(for: .standard) == CGSize(width: 236, height: 196))
+        #expect(DropZoneGeometry.panelSize(for: .standard) == DropZoneGeometry.panelSize)
+        #expect(DropZoneGeometry.popoverDropAreaHeight(for: .standard) == 148)
+        // Every length and font size in the drawing comes back unchanged.
+        for value: CGFloat in [4, 6, 8, 10, 11, 12, 13, 14, 18, 26, 30, 40, 52, 60] {
+            #expect(DropZoneSize.standard.scaled(value) == value)
+        }
+        // Text keeps its size too: the smallest allowed is below what the standard layout uses.
+        #expect(DropZoneSize.standard.scaled(14, minimum: 11) == 14)
+        #expect(DropZoneSize.standard.scaled(13, minimum: 11) == 13)
+        #expect(DropZoneSize.standard.scaled(11, minimum: 10) == 11)
+    }
+
+    @Test func smallIsAboutAFifthSmallerAndLargeAQuarterBigger() {
+        #expect(DropZoneGeometry.panelSize(for: .small) == CGSize(width: 189, height: 157))
+        #expect(DropZoneGeometry.panelSize(for: .large) == CGSize(width: 295, height: 245))
+        #expect(DropZoneGeometry.popoverDropAreaHeight(for: .small) == 118)
+        #expect(DropZoneGeometry.popoverDropAreaHeight(for: .large) == 185)
+    }
+
+    @Test func sizesAreOrderedAndWholePoints() {
+        let panels = DropZoneSize.allCases.map { DropZoneGeometry.panelSize(for: $0) }
+        #expect(panels == panels.sorted { $0.width < $1.width })
+        #expect(Set(panels.map(\.width)).count == 3)
+        for panel in panels {
+            #expect(panel.width == panel.width.rounded() && panel.height == panel.height.rounded())
+        }
+        let heights = DropZoneSize.allCases.map { DropZoneGeometry.popoverDropAreaHeight(for: $0) }
+        #expect(heights == heights.sorted())
+        #expect(Set(heights).count == 3)
+    }
+
+    @Test func scaledTextStaysReadableAtTheSmallSize() {
+        #expect(DropZoneSize.small.scaled(11) == 9)
+        #expect(DropZoneSize.small.scaled(11, minimum: 10) == 10)
+        #expect(DropZoneSize.small.scaled(14, minimum: 11) == 11)
+        #expect(DropZoneSize.large.scaled(11, minimum: 10) == 14)
+    }
+
+    @Test(arguments: DropZoneSize.allCases)
+    func theCardKeepsItsSizeAndSitsBelowTheIcon(zone: DropZoneSize) {
+        let size = DropZoneGeometry.panelSize(for: zone)
+        let frame = DropZoneGeometry.panelFrame(iconFrame: icon, visibleScreenFrame: screen, size: size)
+        #expect(frame.size == size)
+        #expect(frame.maxY < icon.minY)
+        #expect(screen.contains(frame))
+    }
+
+    @Test(arguments: DropZoneSize.allCases)
+    func theCardIsCenteredUnderTheIconWhenThereIsRoom(zone: DropZoneSize) {
+        let middle = CGRect(x: 700, y: 875, width: 32, height: 25)
+        let size = DropZoneGeometry.panelSize(for: zone)
+        let frame = DropZoneGeometry.panelFrame(iconFrame: middle, visibleScreenFrame: screen, size: size)
+        #expect(frame.midX == middle.midX || abs(frame.midX - middle.midX) <= 0.5)
+        #expect(frame.maxY < middle.minY)
+    }
+
+    @Test(arguments: DropZoneSize.allCases)
+    func anIconAtEitherScreenEdgeStillGetsAWholeCardOnScreen(zone: DropZoneSize) {
+        let size = DropZoneGeometry.panelSize(for: zone)
+        let atRight = CGRect(x: 1_395, y: 875, width: 32, height: 25)
+        let right = DropZoneGeometry.panelFrame(iconFrame: atRight, visibleScreenFrame: screen, size: size)
+        #expect(right.maxX == screen.maxX - 8)
+        #expect(screen.contains(right))
+        // Still under the icon, not hanging off to one side of it.
+        #expect(right.minX < atRight.minX && right.maxX > atRight.maxX)
+
+        let atLeft = CGRect(x: 0, y: 875, width: 32, height: 25)
+        let left = DropZoneGeometry.panelFrame(iconFrame: atLeft, visibleScreenFrame: screen, size: size)
+        #expect(left.minX == screen.minX + 8)
+        #expect(screen.contains(left))
+    }
+
+    @Test(arguments: DropZoneSize.allCases)
+    func theCardStaysOpenWhileTheDragDriftsAroundIt(zone: DropZoneSize) {
+        let size = DropZoneGeometry.panelSize(for: zone)
+        let frame = DropZoneGeometry.panelFrame(iconFrame: icon, visibleScreenFrame: screen, size: size)
+        let justOutside = CGPoint(x: frame.minX - 10, y: frame.midY)
+        #expect(DropZoneGeometry.shouldStayOpen(justOutside, iconFrame: icon, panelFrame: frame))
+        #expect(!DropZoneGeometry.shouldStayOpen(CGPoint(x: 100, y: 100), iconFrame: icon, panelFrame: frame))
+    }
 }
 
 struct ActivityTextTests {

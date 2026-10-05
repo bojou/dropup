@@ -8,7 +8,8 @@ import DropUpCore
 /// change count moves when any app starts a drag). Once the pointer comes within
 /// `DropZoneGeometry.proximityRadius` of the icon, a borderless floating panel opens below it. The panel
 /// is a real drag destination, so dropping on it uploads. It closes when the drag leaves, ends or is cancelled.
-/// Its size is `DropZoneGeometry.panelSize`, the single constant to tune.
+/// Its size is `DropZoneGeometry.panelSize(for:)`, from the drop zone size in Settings; a change applies the next
+/// time the panel opens.
 @MainActor
 final class DropPanelController {
     private let model: AppModel
@@ -83,7 +84,8 @@ final class DropPanelController {
         let panel = self.panel ?? makePanel()
         self.panel = panel
         hideGeneration += 1
-        cardFrame = DropZoneGeometry.panelFrame(iconFrame: iconFrame, visibleScreenFrame: visible)
+        let size = DropZoneGeometry.panelSize(for: model.preferences.dropZoneSize)
+        cardFrame = DropZoneGeometry.panelFrame(iconFrame: iconFrame, visibleScreenFrame: visible, size: size)
         panel.setFrame(DropZoneGeometry.windowFrame(forCard: cardFrame), display: false)
         panel.orderFrontRegardless()
         withAnimation(.spring(response: 0.28, dampingFraction: 0.78)) {
@@ -131,7 +133,7 @@ final class DropPanelController {
     // MARK: Panel
 
     private func makePanel() -> NSPanel {
-        let windowSize = DropZoneGeometry.windowFrame(forCard: CGRect(origin: .zero, size: DropZoneGeometry.panelSize)).size
+        let windowSize = DropZoneGeometry.windowFrame(forCard: CGRect(origin: .zero, size: DropZoneGeometry.panelSize(for: model.preferences.dropZoneSize))).size
         let panel = NSPanel(
             contentRect: CGRect(origin: .zero, size: windowSize),
             styleMask: [.borderless, .nonactivatingPanel],

@@ -109,19 +109,20 @@ struct PopoverView: View {
     }
 
     private var readyZone: some View {
-        VStack(spacing: 6) {
+        let zone = model.preferences.dropZoneSize
+        return VStack(spacing: zone.scaled(6)) {
             Image(systemName: "arrow.up.to.line")
-                .font(.system(size: 18, weight: .medium))
+                .font(.system(size: zone.scaled(18), weight: .medium))
                 .foregroundStyle(Color.accentColor)
-                .frame(width: 40, height: 40)
+                .frame(width: zone.scaled(40), height: zone.scaled(40))
                 .background(Circle().fill(Color.primary.opacity(0.06)))
-            Text("Drop files to upload").font(.system(size: 13, weight: .medium))
+            Text("Drop files to upload").font(.system(size: zone.scaled(13, minimum: 11), weight: .medium))
             Text("or drag them onto the menubar icon")
-                .font(.system(size: 11))
+                .font(.system(size: zone.scaled(11, minimum: 10)))
                 .foregroundStyle(.secondary)
         }
         .frame(maxWidth: .infinity)
-        .frame(height: 148)
+        .frame(height: DropZoneGeometry.popoverDropAreaHeight(for: zone))
         .background(dashedBorder)
     }
 
