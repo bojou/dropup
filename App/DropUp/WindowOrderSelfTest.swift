@@ -226,7 +226,226 @@ enum WindowOrderSelfTest {
         await caseVisible()
         await caseSetup()
         await closeAll()
+
+        let rig = Rig(model: model, windows: windows, status: status)
+        await rig.reportedSteps()
+        await rig.sequences()
+        if rig.failed { failed = true }
+        await closeAll()
         return failed ? 1 : 0
+    }
+
+    // MARK: Sequences
+
+    private enum Name: String, CaseIterable, Comparable {
+        case settings, browse, choose, onboarding
+        static func < (a: Name, b: Name) -> Bool { a.rawValue < b.rawValue }
+    }
+
+    /// What a person does with the windows, one thing at a time.
+    private enum Step: CustomStringConvertible {
+        /// Clicks in another app, which covers every DropUp window.
+        case hide
+        /// Opens a window, or opens one again that is already open: from the popover, and for the setup window from the icon.
+        case open(Name)
+        /// Closes a window with its button (Done in Settings does the same).
+        case close(Name)
+        /// Opens the popover and closes it again without choosing anything.
+        case peek
+
+        var description: String {
+            switch self {
+            case .hide: "hide"
+            case .open(let name): "open \(name.rawValue)"
+            case .close(let name): "close \(name.rawValue)"
+            case .peek: "peek"
+            }
+        }
+    }
+
+    /// What was seen while a step ran: the places of the windows every 30 ms.
+    @MainActor
+    private final class Samples {
+        var list: [(at: Double, places: [Name: String])] = []
+        var running = true
+    }
+
+    /// Plays steps against the real windows and checks after each one that only the window that was asked for moved
+    /// forward: every other window of DropUp keeps its place behind the other app, also for a moment in between.
+    @MainActor
+    private final class Rig {
+        let model: AppModel
+        let windows: WindowCoordinator
+        let status: StatusItemController
+        var failed = false
+
+        init(model: AppModel, windows: WindowCoordinator, status: StatusItemController) {
+            self.model = model
+            self.windows = windows
+            self.status = status
+        }
+
+        func window(_ name: Name) -> NSWindow? { windows.windowsForSelfTest[name.rawValue] ?? nil }
+
+        func place(_ name: Name) -> String { WindowOrderSelfTest.place(window(name)) }
+
+        /// The windows that are open and where they are.
+        func places() -> [Name: String] {
+            var result: [Name: String] = [:]
+            for name in Name.allCases where window(name)?.isVisible == true { result[name] = place(name) }
+            return result
+        }
+
+        func describe(_ places: [Name: String]) -> String {
+            places.sorted { $0.key < $1.key }.map { "\($0.key.rawValue)=\($0.value)" }.joined(separator: " ")
+        }
+
+        func reset() async {
+            for name in Name.allCases { window(name)?.close() }
+            await WindowOrderSelfTest.sleep(0.8)
+            await WindowOrderSelfTest.otherAppFront()
+        }
+
+        /// Clicking on the menubar icon: the app becomes the active one if it is not.
+        func openPopover() async {
+            if !NSApp.isActive { await WindowOrderSelfTest.otherAppFront(yielding: true) }
+            status.togglePopover()
+            await WindowOrderSelfTest.sleep(0.6)
+        }
+
+        private func perform(_ step: Step) async {
+            switch step {
+            case .hide:
+                await WindowOrderSelfTest.otherAppFront()
+            case .open(.onboarding):
+                if !NSApp.isActive { await WindowOrderSelfTest.otherAppFront(yielding: true) }
+                windows.showOnboarding()
+            case .open(let name):
+                await openPopover()
+                status.selfTestChoose(name.rawValue)
+            case .close(let name):
+                window(name)?.close()
+            case .peek:
+                await openPopover()
+                status.togglePopover()
+            }
+        }
+
+        /// One step, waiting `gap` seconds first. Returns what is wrong, and a line for the trace.
+        private func play(_ step: Step, gap: Double) async -> (problems: [String], line: String) {
+            await WindowOrderSelfTest.sleep(gap)
+            let before = places()
+            let wasActive = NSApp.isActive
+            let started = Date()
+            let samples = Samples()
+            let sampler = Task { @MainActor in
+                while samples.running {
+                    samples.list.append((Date().timeIntervalSince(started), self.places()))
+                    await WindowOrderSelfTest.sleep(0.03)
+                }
+            }
+            await perform(step)
+            await WindowOrderSelfTest.sleep(0.7)
+            samples.running = false
+            await sampler.value
+            let after = places()
+
+            var requested: Name?
+            if case .open(let name) = step { requested = name }
+            var closed: Name?
+            if case .close(let name) = step { closed = name }
+            var bad: [String] = []
+            for (name, was) in before where name != requested && name != closed {
+                guard let now = after[name] else { bad.append("\(name.rawValue) went away"); continue }
+                if case .hide = step {
+                    if now != "below" { bad.append("\(name.rawValue) was not covered by the other app") }
+                    continue
+                }
+                if now != was { bad.append("\(name.rawValue) was \(was), is now \(now)") }
+                if was == "below", let seen = samples.list.first(where: { $0.places[name] == "ABOVE" }) {
+                    bad.append("\(name.rawValue) came forward for a moment, \(Int(seen.at * 1000)) ms in")
+                }
+            }
+            if let requested {
+                if after[requested] != "ABOVE" { bad.append("\(requested.rawValue) did not come forward (\(after[requested] ?? "gone"))") }
+                else if window(requested)?.isKeyWindow != true { bad.append("\(requested.rawValue) did not get the keyboard") }
+            }
+            let line = "\(step) after \(String(format: "%.2f", gap)) s, active \(wasActive)->\(NSApp.isActive): \(describe(before)) => \(describe(after))"
+            return (bad, line)
+        }
+
+        /// Runs the steps one after another from a clean start and reports one line.
+        func play(_ title: String, _ steps: [(Step, Double)]) async {
+            await reset()
+            var trace: [String] = []
+            var problems: [String] = []
+            for (index, (step, gap)) in steps.enumerated() {
+                let result = await play(step, gap: gap)
+                trace.append("    \(index + 1). \(result.line)")
+                for problem in result.problems { problems.append("step \(index + 1) (\(step)): \(problem)") }
+            }
+            if !problems.isEmpty { failed = true }
+            print("SELFTEST \(title): \(steps.count) steps -> \(problems.isEmpty ? "PASS" : "FAIL " + problems.joined(separator: "; "))")
+            if !problems.isEmpty { trace.forEach { print($0) } }
+        }
+
+        /// The steps of the report, in both directions, repeated: the one window is open and hidden, the other opens
+        /// and closes, then opens again.
+        func reportedSteps() async {
+            for (first, second) in [(Name.settings, Name.browse), (.browse, .settings), (.choose, .browse), (.settings, .choose)] {
+                for round in 1...4 {
+                    // Rounds alternate between waiting a moment before opening again and doing it at once.
+                    let wait = round % 2 == 0 ? 0.1 : 1.2
+                    await play("reported steps, \(first.rawValue) hidden then \(second.rawValue) twice (round \(round))", [
+                        (.open(first), 0.3), (.hide, 0.3), (.open(second), 0.5), (.close(second), 0.5), (.open(second), wait),
+                        (.close(second), 0.5), (.hide, 0.2), (.open(second), wait), (.close(second), 0.5),
+                    ])
+                }
+            }
+        }
+
+        /// A made-up but fixed sequence of things a person might do, over 2, 3 and 4 windows.
+        func sequences() async {
+            let sets: [[Name]] = [
+                [.settings, .browse], [.browse, .choose], [.settings, .choose],
+                [.settings, .browse, .choose], [.settings, .browse, .onboarding], [.browse, .choose, .onboarding],
+                [.settings, .browse, .choose, .onboarding], [.settings, .browse, .choose, .onboarding],
+            ]
+            for (index, names) in sets.enumerated() {
+                let steps = Self.sequence(names: names, seed: UInt64(index + 1) &* 7919, length: 14)
+                await play("sequence \(index + 1) over \(names.map(\.rawValue).joined(separator: ", "))", steps)
+            }
+        }
+
+        private struct Random {
+            var state: UInt64
+            mutating func next(_ limit: Int) -> Int {
+                state = state &* 6364136223846793005 &+ 1442695040888963407
+                return Int((state >> 33) % UInt64(limit))
+            }
+        }
+
+        static func sequence(names: [Name], seed: UInt64, length: Int) -> [(Step, Double)] {
+            var random = Random(state: seed)
+            var open = Set<Name>()
+            var steps: [(Step, Double)] = []
+            for _ in 0..<length {
+                let step: Step
+                switch random.next(10) {
+                case 0, 1: step = .hide
+                case 2: step = .peek
+                case 3...4 where !open.isEmpty: step = .close(open.sorted()[random.next(open.count)])
+                default: step = .open(names[random.next(names.count)])
+                }
+                switch step {
+                case .open(let name): open.insert(name)
+                case .close(let name): open.remove(name)
+                default: break
+                }
+                steps.append((step, [0.05, 0.4, 1.0][random.next(3)]))
+            }
+            return steps
+        }
     }
 }
 #endif
