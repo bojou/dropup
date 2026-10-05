@@ -105,6 +105,11 @@ final class WindowOrderKeeper {
             guard let window = NSApp.window(withWindowNumber: restore.window) as? DropUpWindow else { continue }
             window.order(.below, relativeTo: restore.below)
         }
+        // Should the window server not take a place next to another app's window, behind everything is behind it too.
+        let stillForward = WindowStack.restores(before: baseline, now: Self.windowsOnScreen(), ownProcess: getpid(), allowed: askedNumbers)
+        for restore in stillForward {
+            (NSApp.window(withWindowNumber: restore.window) as? DropUpWindow)?.orderBack(nil)
+        }
         // The window that was asked for keeps the keyboard.
         if let wanted = asked.last?.window, wanted.isVisible, !wanted.isKeyWindow, wanted.canBecomeKey { wanted.makeKey() }
     }
