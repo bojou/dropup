@@ -7,7 +7,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        mode: [pipe, file, pipe-quiet, file-quiet]
+        mode: [skip-keychain, skip-keys, skip-both, only-slow]
     runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
@@ -27,19 +27,20 @@ jobs:
         run: |
           sysctl -n hw.ncpu
           case "${{ matrix.mode }}" in
-            *quiet) export DROPUP_IT_QUIET=1 ;;
+            skip-keychain) args="--skip KeychainStoreTests" ;;
+            skip-keys) args="--skip KeyLoginIntegrationTests" ;;
+            skip-both) args="--skip KeychainStoreTests --skip KeyLoginIntegrationTests" ;;
+            only-slow) args="--filter KeychainStoreTests --filter KeyLoginIntegrationTests" ;;
           esac
           for round in 1 2 3; do
             echo "== round $round"
             set +e
-            case "${{ matrix.mode }}" in
-              pipe*) swift test --package-path DropUpCore --skip-build 2>&1 | tee "$RUNNER_TEMP/out-$round.log" > /dev/stderr ;;
-              file*) swift test --package-path DropUpCore --skip-build > "$RUNNER_TEMP/out-$round.log" 2>&1 ;;
-            esac
+            swift test --package-path DropUpCore --skip-build $args > "$RUNNER_TEMP/out-$round.log" 2>&1
             set -e
             grep -E '✘|Test run with' "$RUNNER_TEMP/out-$round.log" | head -8
             echo "fastest:"; grep -oE 'passed after [0-9.]+' "$RUNNER_TEMP/out-$round.log" | awk '{print $3}' | sort -n | head -3 | tr '\n' ' '; echo
+            echo "slowest:"; grep -E ' passed after ' "$RUNNER_TEMP/out-$round.log" | awk '{print $(NF-1), $3}' | sort -rn | head -6
             echo "first finished:"; grep -m3 -E ' passed after ' "$RUNNER_TEMP/out-$round.log"
+            echo "keychain/keys:"; grep -E '(removeAllPasswords|aWrongPassphraseSaysSo|aPassphraseWithACipher|signsInWith|Suite KeyLogin|Suite Keychain).*(passed|failed)' "$RUNNER_TEMP/out-$round.log" | head -8
             echo "unreachable:"; grep -E 'unreachablePortFailsFast.*(passed|failed|Expectation)' "$RUNNER_TEMP/out-$round.log" | head -3
-            echo "lines: $(wc -l < "$RUNNER_TEMP/out-$round.log")"
           done
