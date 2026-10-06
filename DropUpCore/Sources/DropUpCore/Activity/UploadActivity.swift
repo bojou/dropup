@@ -92,15 +92,14 @@ public struct UploadActivity: Equatable, Sendable {
     /// Recent list keeps nothing.
     public private(set) var lastSucceededAt: Date?
 
-    // Speed is measured over a short sliding window of cumulative bytes sent.
+    // Speed is measured over a short sliding window of cumulative bytes sent (`TransferSpeed`).
     private var batchIDs: Set<UUID> = []
     /// Members of the running batch that were taken out of the list by hand. They stay in the batch's own accounting
     /// (the ring, the sound and the notice at the end) so removing a row never makes the ring jump back or hides what
     /// the batch did.
     private var departed: [Item] = []
     private var bytesFinished: Int64 = 0
-    private var samples: [(time: Date, bytes: Int64)] = []
-    private static let speedWindow: TimeInterval = 3
+    private var meter = TransferSpeed()
 
     public init() {}
 
@@ -151,17 +150,14 @@ public struct UploadActivity: Equatable, Sendable {
     /// Bytes per second over the last few seconds, or nil before there is enough data.
     public func speed(now: Date = Date()) -> Double? {
         guard isBusy else { return nil }
-        let recent = samples.filter { now.timeIntervalSince($0.time) <= Self.speedWindow }
-        guard let first = recent.first, let last = recent.last, last.time > first.time else { return nil }
-        let rate = Double(last.bytes - first.bytes) / last.time.timeIntervalSince(first.time)
-        return rate > 0 ? rate : nil
+        return meter.bytesPerSecond(now: now)
     }
 
     /// Seconds left for the whole batch at the current speed.
     public func secondsRemaining(now: Date = Date()) -> Double? {
-        guard let speed = speed(now: now) else { return nil }
+        guard isBusy else { return nil }
         let left = active.reduce(Int64(0)) { $0 + max($1.totalBytes - $1.bytesSent, 0) }
-        return Double(left) / speed
+        return meter.secondsRemaining(left, now: now)
     }
 
     // MARK: Events
@@ -174,7 +170,7 @@ public struct UploadActivity: Equatable, Sendable {
                 // is not carried over, or every upload after it would show as failed until someone opened the popover.
                 batchIDs = []
                 departed = []
-                samples = []
+                meter = TransferSpeed()
                 bytesFinished = 0
                 hasUnseenFailure = false
             }
@@ -316,10 +312,7 @@ public struct UploadActivity: Equatable, Sendable {
     }
 
     private mutating func recordSample(_ now: Date) {
-        let sent = bytesFinished + active.reduce(Int64(0)) { $0 + $1.bytesSent }
-        if let last = samples.last, last.bytes == sent, now.timeIntervalSince(last.time) < 0.2 { return }
-        samples.append((now, sent))
-        samples.removeAll { now.timeIntervalSince($0.time) > Self.speedWindow * 2 }
+        meter.record(bytesFinished + active.reduce(Int64(0)) { $0 + $1.bytesSent }, at: now)
     }
 
     public static func == (lhs: UploadActivity, rhs: UploadActivity) -> Bool {
