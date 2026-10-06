@@ -53,8 +53,10 @@ public enum UploadEvent: Sendable, Equatable {
 /// Uploads dropped files and folders one at a time and reports what happens on `events`.
 ///
 /// A folder is one item in the queue: it is sent with everything inside it, as the same name on the server (numbered
-/// when that name is taken, unless the setting is to replace). Its name in the events ends with `/`.
-/// Symbolic links inside it are left out. A folder that is cancelled or fails halfway keeps the files already sent.
+/// when that name is taken, unless the setting is to replace). Its name in the events ends with `/`. Several of its
+/// files go at once (`FolderLanes`), and its progress counts them all.
+/// Symbolic links inside it are left out. A folder that is cancelled or fails halfway keeps the files already sent; a
+/// cancel takes away the files it was in the middle of.
 /// A folder is read (to learn what is in it and how big it is) on its own, off the queue, so a big one never holds up
 /// a cancel or the files behind it. Its subfolders are made on the server as the files going into them come up.
 ///
@@ -106,6 +108,9 @@ public actor UploadQueue {
     private enum Stop { case cancel, pause }
     private var stops: [UUID: Stop] = [:]
     private var openSession: OpenSession?
+    /// More connections a folder upload opened for itself, so a stop can close them under a stuck transfer too.
+    private var extraSessions: [any ServerSession] = []
+    private let allowance = ConnectionAllowance()
 
     /// - Parameters:
     ///   - progressInterval: minimum seconds between `.progress` events per file.
@@ -251,10 +256,11 @@ public actor UploadQueue {
     }
 
     /// Takes the half-sent file of an interrupted upload off the server, on a connection of its own, so it can run
-    /// while other uploads do. For a folder that is only the file it was in the middle of: the files it finished and
+    /// while other uploads do. For a folder that is only the files it was in the middle of: the files it finished and
     /// the folders stay. Returns nil when nothing is left, or why it couldn't be done.
     public func discard(_ point: ResumePoint) async -> String? {
-        guard let path = point.partialPath, let config = point.config else { return nil }
+        let paths = point.partialPaths
+        guard !paths.isEmpty, let config = point.config else { return nil }
         guard let password = credentials.loginSecret(for: config) else {
             return UploadFailure.missingPassword.displayMessage
         }
@@ -263,9 +269,11 @@ public actor UploadQueue {
             try await withTimeout(seconds: cleanupTimeout) {
                 let session = try await connectors.connector(for: config.transferProtocol).connect(to: config, password: password)
                 do {
-                    let size: Int64?
-                    do { size = try await session.fileSize(atPath: path) } catch UploaderError.cannotResume { size = 0 }
-                    if size != nil { try await session.deleteFile(atPath: path) }
+                    for path in paths {
+                        let size: Int64?
+                        do { size = try await session.fileSize(atPath: path) } catch UploaderError.cannotResume { size = 0 }
+                        if size != nil { try await session.deleteFile(atPath: path) }
+                    }
                 } catch {
                     await session.close()
                     throw error
@@ -280,7 +288,7 @@ public actor UploadQueue {
 
     /// `discard`, for a waiting upload that is cancelled: nobody waits for the answer.
     private func discardLater(_ point: ResumePoint?) {
-        guard let point, point.partialPath != nil else { return }
+        guard let point, !point.partialPaths.isEmpty else { return }
         Task { _ = await self.discard(point) }
     }
 
@@ -322,10 +330,11 @@ public actor UploadQueue {
     private func process(_ job: Job) async {
         continuation.yield(.started(id: job.id))
         let written = WrittenFile()
-        // An interrupted upload has a file on the server that is its own. A cancel has to know, even before it connects.
-        if let point = job.resume, let path = point.partialPath, let config = point.config,
-           let password = credentials.loginSecret(for: config) {
-            written.willUpload(to: path, on: config, password: password, alreadyThere: true)
+        // An interrupted upload has files on the server that are its own. A cancel has to know, even before it connects.
+        if let point = job.resume, let config = point.config, let password = credentials.loginSecret(for: config) {
+            for path in point.partialPaths {
+                written.willUpload(to: path, on: config, password: password, alreadyThere: true)
+            }
         }
         let run = UploadRun(point: job.resume)
         let ending = await attempts(job, written: written, run: run)
@@ -337,7 +346,7 @@ public actor UploadQueue {
             // The session is mid-transfer and in an unknown state.
             await closeSession()
             continuation.yield(.cancelled(id: job.id))
-            if let leftover = written.leftover {
+            for leftover in written.leftovers {
                 await delete(leftover)
             }
         case .paused:
@@ -559,7 +568,7 @@ public actor UploadQueue {
             remotePath: remotePath, totalBytes: total, sourceModified: modified, created: holdsPartial
         ), id: id, run: run)
         let report: @Sendable (Int64) -> Void = { sent in
-            written.serverHasFile()
+            written.serverHasFile(remotePath)
             run.report(sent)
             if let point = run.markCreated() { continuation.yield(.resumable(id: id, point)) }
             if sent > 0, throttle.shouldReport(sent) {
@@ -626,13 +635,16 @@ public actor UploadQueue {
         let previous = earlier.flatMap { $0.isFolder && $0.remotePath != nil ? $0 : nil }
         let root: String
         var index = 0
-        var firstOffset: Int64 = 0
+        // Files past `index` that are done already, and the half-sent ones that carry on from what the server holds.
+        var doneAhead: Set<Int> = []
+        var offsets: [Int: Int64] = [:]
         if let previous, let held = previous.remotePath {
             // Carrying on: the same folder, with the files that are done left alone.
             root = held
             try await Self.ensureFolder(root, session: session)
             if previous.fingerprint == fingerprint {
                 index = min(previous.finishedFiles, tree.files.count)
+                var trusted = true
                 if index > 0 {
                     // The files the note calls done have to still be there: a folder the user cleared out on the server
                     // in the meantime starts over, instead of being finished without them.
@@ -641,30 +653,44 @@ public actor UploadQueue {
                     switch try await Self.look(at: Self.join(root, last.relativePath), session: session) {
                     case .missing:
                         index = 0
+                        trusted = false
                         continuation.yield(.restarted(id: job.id, reason: "Files already sent are gone from the server, so the folder starts over."))
                     case .size(let size) where size != last.size:
                         index = 0
+                        trusted = false
                         continuation.yield(.restarted(id: job.id, reason: "Files already sent have changed on the server, so the folder starts over."))
                     default:
                         break
                     }
                 }
-                // Notes are made now and then, not after every file, so a few more may be done than the last one says.
-                // A file is done when the server holds as many bytes of it as it has; the one after is carried on from
-                // what it holds, if that is the file the last note was in the middle of.
-                look: while index < tree.files.count {
-                    let file = tree.files[index]
-                    run.touch()
-                    switch try await Self.look(at: Self.join(root, file.relativePath), session: session) {
-                    case .size(let size) where size == file.size:
-                        index += 1
+                // Several files go at once and finish in any order. Of the files the note says were started, the ones
+                // it doesn't list as being sent are done. The ones being sent are looked at: done by now, carried on
+                // from what the server holds if they are this upload's own, or sent again.
+                // Notes are made now and then, not after every file, so a few more may be done than the last one says:
+                // past the started ones, files are looked at until one isn't all there.
+                let sending = trusted ? Set(previous.inFlightFiles) : []
+                let partial = trusted ? Set(previous.heldFiles) : []
+                let started = trusted ? min(previous.startedFiles ?? index + sending.count, tree.files.count) : index
+                var position = index
+                look: while position < tree.files.count {
+                    let file = tree.files[position]
+                    defer { position += 1 }
+                    if position < started, !sending.contains(file.relativePath) {
+                        doneAhead.insert(position)
                         continue look
-                    case .size(let size) where size < file.size && previous.created && previous.currentFile == file.relativePath:
-                        firstOffset = size
-                    default:
-                        break
                     }
-                    break
+                    run.touch()
+                    let remotePath = Self.join(root, file.relativePath)
+                    switch try await Self.look(at: remotePath, session: session) {
+                    case .size(let size) where size == file.size:
+                        doneAhead.insert(position)
+                        // A file a cancel would have taken away is done, and stays.
+                        written.finished(remotePath)
+                    case .size(let size) where size < file.size && partial.contains(file.relativePath):
+                        offsets[position] = size
+                    default:
+                        if position >= started { break look }
+                    }
                 }
             } else {
                 continuation.yield(.restarted(id: job.id, reason: "The folder changed, so it starts over."))
@@ -690,67 +716,91 @@ public actor UploadQueue {
         // subfolders starts sending, and can be cancelled, right away. Each one is made once, outermost first.
         // The ones the finished files sit in are there already.
         var made: Set<String> = []
-        for file in tree.files[..<index] {
+        for (position, file) in tree.files.enumerated() where position < index || doneAhead.contains(position) {
             made.formUnion(LocalTree.folders(containing: file.relativePath))
         }
+        let maker = FolderMaker(root: root, made: made)
 
+        let files = FolderFiles(sizes: tree.files.map(\.size), firstUndone: index, done: doneAhead)
+        let carryOn = offsets
         let throttle = ProgressThrottle(interval: progressInterval, total: total)
         let continuation = self.continuation
         let id = job.id
-        var sentBefore = tree.files[..<index].reduce(Int64(0)) { $0 + $1.size }
-        var point = ResumePoint(
+        let paths = tree.files.map(\.relativePath)
+        let base = ResumePoint(
             sourcePath: job.fileURL.path, isFolder: true, directory: job.remoteDirectory, config: config,
-            remotePath: root, totalBytes: total, finishedFiles: index, fingerprint: fingerprint
+            remotePath: root, totalBytes: total, fingerprint: fingerprint
         )
-        note(point, id: id, run: run)
-        var lastNote = Uptime.now
-        let carriedOnAt = index
-        while index < tree.files.count {
-            let file = tree.files[index]
-            try Task.checkCancellation()
-            run.touch()
-            for folder in LocalTree.folders(containing: file.relativePath) {
-                try await Self.make(folder, under: root, made: &made, session: session)
-            }
-            let remotePath = Self.join(root, file.relativePath)
-            let offset = index == carriedOnAt ? firstOffset : 0
-            written.willUpload(to: remotePath, on: config, password: password, alreadyThere: offset > 0)
-            // What a note says is the file being sent, so a file is noted if it is big enough to be worth carrying on
-            // or it has been a while; a stretch of small files in between is looked over when carrying on.
-            let now = Uptime.now
-            let noted = file.size >= Self.noteFilesFrom || now - lastNote >= 1
-            if noted {
-                point.finishedFiles = index
-                point.currentFile = file.relativePath
-                point.created = offset > 0
-                note(point, id: id, run: run)
-                lastNote = now
-            }
-            let base = sentBefore
-            let report: @Sendable (Int64) -> Void = { sent in
-                written.serverHasFile()
-                run.report(sent)
-                if noted, let updated = run.markCreated() { continuation.yield(.resumable(id: id, updated)) }
-                let overall = base + sent
-                if sent > 0, throttle.shouldReport(overall) {
-                    continuation.yield(.progress(id: id, UploadProgress(bytesSent: overall, totalBytes: total)))
+        // What a note says is where the folder stands: the files done, and the ones being sent and which of those the
+        // server holds part of. A file is noted as it starts if it is big enough to be worth carrying on or it has
+        // been a while; a stretch of small files in between is looked over when carrying on.
+        let note: @Sendable (Int, Int, [Int], [Int]) -> Void = { finished, started, sending, held in
+            var point = base
+            point.finishedFiles = finished
+            point.startedFiles = started
+            point.sendingFiles = sending.map { paths[$0] }
+            point.partialFiles = held.map { paths[$0] }
+            point.currentFile = sending.first.map { paths[$0] }
+            point.created = sending.first.map { held.contains($0) } ?? false
+            run.setPoint(point)
+            continuation.yield(.resumable(id: id, point))
+        }
+        files.note(note)
+
+        let lane: @Sendable (any ServerSession) async throws -> Void = { session in
+            while let (position, offset, noted) = files.take(
+                startingAt: { carryOn[$0] ?? 0 },
+                noteIf: { size, since in size >= Self.noteFilesFrom || since >= 1 }
+            ) {
+                let file = tree.files[position]
+                try Task.checkCancellation()
+                run.touch()
+                for folder in LocalTree.folders(containing: file.relativePath) {
+                    try await maker.make(folder, session: session)
                 }
-            }
-            try await Self.wrapped(file.relativePath) {
-                try await Self.send(file.url, to: remotePath, from: offset, total: file.size, session: session, id: id, continuation: continuation, run: run, report: report)
-            }
-            sentBefore += file.size
-            index += 1
-            if noted {
-                point.finishedFiles = index
-                point.currentFile = nil
-                point.created = false
-                note(point, id: id, run: run)
+                let remotePath = Self.join(root, file.relativePath)
+                written.willUpload(to: remotePath, on: config, password: password, alreadyThere: offset > 0)
+                if noted { files.note(note) }
+                let report: @Sendable (Int64) -> Void = { sent in
+                    written.serverHasFile(remotePath)
+                    let (overall, newlyHeld) = files.reported(position, bytes: sent) { overall in
+                        if sent > 0, throttle.shouldReport(overall) {
+                            continuation.yield(.progress(id: id, UploadProgress(bytesSent: overall, totalBytes: total)))
+                        }
+                    }
+                    run.report(overall)
+                    if newlyHeld { files.note(note) }
+                }
+                try await Self.wrapped(file.relativePath) {
+                    try await Self.send(file.url, to: remotePath, from: offset, total: file.size, session: session, id: id, continuation: continuation, run: run, report: report)
+                }
+                written.finished(remotePath)
+                let wasNoted = files.finished(position)
+                files.note(due: { wasNoted || $0 >= 1 }, note)
             }
         }
+
+        let connectors = self.connectors
+        do {
+            try await FolderLanes.run(
+                main: session,
+                files: files.remaining,
+                allowance: allowance,
+                server: config,
+                connect: { try await connectors.connector(for: config.transferProtocol).connect(to: config, password: password) },
+                opened: { [weak self] extra in await self?.track(extra) },
+                lane: lane
+            )
+        } catch {
+            extraSessions.removeAll()
+            // Where every file stands as it stopped, for carrying on: the ones it was in the middle of stay as they are.
+            files.note(force: true, note)
+            throw error
+        }
+        extraSessions.removeAll()
         // Folders with no files in them (and nothing but such folders inside) are still part of the folder.
         for folder in tree.directories {
-            try await Self.make(folder, under: root, made: &made, session: session)
+            try await maker.make(folder, session: session)
         }
         return root
     }
@@ -765,12 +815,37 @@ public actor UploadQueue {
         continuation.yield(.resumable(id: id, point))
     }
 
-    /// Makes a folder inside the uploaded one, unless that has been done already.
-    private static func make(_ folder: String, under root: String, made: inout Set<String>, session: any ServerSession) async throws {
-        guard made.insert(folder).inserted else { return }
-        // A real server answers each command in turn, however many are waiting: look for a cancel before every one.
-        try Task.checkCancellation()
-        try await wrapped(folder) { try await ensureFolder(join(root, folder), session: session) }
+    /// Makes the folders inside an uploaded one as the files going into them come up: each once, also when several
+    /// files want the same folder at the same time.
+    private actor FolderMaker {
+        let root: String
+        private var made: Set<String>
+        private var making: [String: Task<Void, any Error>] = [:]
+
+        init(root: String, made: Set<String>) {
+            self.root = root
+            self.made = made
+        }
+
+        func make(_ folder: String, session: any ServerSession) async throws {
+            if made.contains(folder) { return }
+            if let task = making[folder] {
+                try await task.value
+                return
+            }
+            // A real server answers each command in turn, however many are waiting: look for a cancel before every one.
+            try Task.checkCancellation()
+            let path = UploadQueue.join(root, folder)
+            let task = Task { try await UploadQueue.wrapped(folder) { try await UploadQueue.ensureFolder(path, session: session) } }
+            making[folder] = task
+            defer { making[folder] = nil }
+            try await task.value
+            made.insert(folder)
+        }
+    }
+
+    private func track(_ session: any ServerSession) {
+        extraSessions.append(session)
     }
 
     private static func join(_ folder: String, _ name: String) -> String {
@@ -825,6 +900,11 @@ public actor UploadQueue {
     }
 
     private func closeSession() async {
+        let extra = extraSessions
+        extraSessions.removeAll()
+        for session in extra {
+            await session.close()
+        }
         guard let openSession else { return }
         self.openSession = nil
         await openSession.session.close()
@@ -850,6 +930,7 @@ public actor UploadQueue {
 /// Tracks whether an upload has put a file on the server, so a cancel knows if there is anything to clean up.
 /// A cancel that lands before the server created the file (while connecting, or while picking a name)
 /// must leave the path alone: with `ConflictPolicy.replace` it can belong to a file the user already had.
+/// A folder upload has several files on the way at once, each tracked from its start until it is done.
 final class WrittenFile: @unchecked Sendable {
     struct Leftover {
         let remotePath: String
@@ -858,26 +939,40 @@ final class WrittenFile: @unchecked Sendable {
     }
 
     private let lock = NSLock()
-    private var target: Leftover?
-    private var created = false
+    private var targets: [(leftover: Leftover, created: Bool)] = []
 
-    /// Starts tracking a new file. A folder upload calls this once per file. With `alreadyThere` the server holds a
+    /// Starts tracking a file. A folder upload calls this once per file. With `alreadyThere` the server holds a
     /// partly sent copy of it that is this upload's own, from an earlier try, so a cancel has it to clean up even before
     /// anything is sent this time.
     func willUpload(to remotePath: String, on config: ServerConfig, password: String, alreadyThere: Bool = false) {
         lock.withLock {
-            target = Leftover(remotePath: remotePath, config: config, password: password)
-            created = alreadyThere
+            let target = (Leftover(remotePath: remotePath, config: config, password: password), alreadyThere)
+            if let index = targets.firstIndex(where: { $0.leftover.remotePath == remotePath }) {
+                targets[index] = target
+            } else {
+                targets.append(target)
+            }
         }
     }
 
-    /// The server reported progress, which `ServerSession.upload` does first with 0 once it has created the file.
-    func serverHasFile() {
-        lock.withLock { created = true }
+    /// The server reported progress on `remotePath`, which `ServerSession.upload` does first with 0 once it has created
+    /// the file.
+    func serverHasFile(_ remotePath: String) {
+        lock.withLock {
+            if let index = targets.firstIndex(where: { $0.leftover.remotePath == remotePath }) {
+                targets[index].created = true
+            }
+        }
     }
 
-    var leftover: Leftover? {
-        lock.withLock { created ? target : nil }
+    /// A file of a folder went through: a cancel of the folder leaves it.
+    func finished(_ remotePath: String) {
+        lock.withLock { targets.removeAll { $0.leftover.remotePath == remotePath } }
+    }
+
+    /// The files a cancel takes away, in the order they were started.
+    var leftovers: [Leftover] {
+        lock.withLock { targets.filter(\.created).map(\.leftover) }
     }
 }
 

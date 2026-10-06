@@ -31,7 +31,8 @@ public enum DownloadEvent: Sendable, Equatable {
 
 /// Downloads files and folders one at a time and reports what happens on `events`.
 ///
-/// A folder arrives as a folder of the same name, with everything inside it. It is one item in the queue.
+/// A folder arrives as a folder of the same name, with everything inside it. It is one item in the queue. Several of
+/// its files come at once (`FolderLanes`), and its progress counts them all.
 /// Symbolic links inside it are left out, and if it is cancelled or fails halfway the whole local folder is removed.
 ///
 /// Each file is written next to its final place under a temporary name and moved into position when it
@@ -65,6 +66,9 @@ public actor DownloadQueue {
     private var active: (id: UUID, task: Task<URL, any Error>)?
     private var cancelledIDs: Set<UUID> = []
     private var openSession: OpenSession?
+    /// More connections a folder download opened for itself, closed with the session.
+    private var extraSessions: [any ServerSession] = []
+    private let allowance = ConnectionAllowance()
 
     public init(
         connectors: any ConnectorFactory,
@@ -208,25 +212,44 @@ public actor DownloadQueue {
             }
             let throttle = ProgressThrottle(interval: progressInterval, total: total)
             let continuation = self.continuation
-            var receivedBefore: Int64 = 0
-            for file in tree.files {
-                try Task.checkCancellation()
-                let base = receivedBefore
-                let remote = job.file.remotePath.hasSuffix("/") ? job.file.remotePath + file.relativePath : job.file.remotePath + "/" + file.relativePath
-                do {
-                    try await session.download(remotePath: remote, to: root.appendingPathComponent(file.relativePath)) { received in
-                        if throttle.shouldReport(base + received) {
-                            continuation.yield(.progress(id: id, UploadProgress(bytesSent: base + received, totalBytes: total)))
+            let files = FolderFiles(sizes: tree.files.map { $0.size ?? 0 }, firstUndone: 0)
+            let folder = job.file.remotePath
+            let lane: @Sendable (any ServerSession) async throws -> Void = { session in
+                while let (position, _, _) = files.take(startingAt: { _ in 0 }, noteIf: { _, _ in false }) {
+                    try Task.checkCancellation()
+                    let file = tree.files[position]
+                    let remote = folder.hasSuffix("/") ? folder + file.relativePath : folder + "/" + file.relativePath
+                    do {
+                        try await session.download(remotePath: remote, to: root.appendingPathComponent(file.relativePath)) { received in
+                            _ = files.reported(position, bytes: received) { overall in
+                                if throttle.shouldReport(overall) {
+                                    continuation.yield(.progress(id: id, UploadProgress(bytesSent: overall, totalBytes: total)))
+                                }
+                            }
                         }
+                    } catch let error as UploaderError {
+                        throw FolderTransferError(path: file.relativePath, reason: error.errorDescription ?? "\(error)")
                     }
-                } catch let error as UploaderError {
-                    throw FolderTransferError(path: file.relativePath, reason: error.errorDescription ?? "\(error)")
+                    files.finished(position)
                 }
-                receivedBefore += file.size ?? 0
             }
+            let connectors = self.connectors
+            let config = job.config
+            let password = job.password
+            try await FolderLanes.run(
+                main: session,
+                files: files.remaining,
+                allowance: allowance,
+                server: config,
+                connect: { try await connectors.connector(for: config.transferProtocol).connect(to: config, password: password) },
+                opened: { [weak self] extra in await self?.track(extra) },
+                lane: lane
+            )
+            extraSessions.removeAll()
             try Task.checkCancellation()
             return root
         } catch {
+            extraSessions.removeAll()
             try? fileManager.removeItem(at: root)
             throw error
         }
@@ -258,7 +281,16 @@ public actor DownloadQueue {
         return session
     }
 
+    private func track(_ session: any ServerSession) {
+        extraSessions.append(session)
+    }
+
     private func closeSession() async {
+        let extra = extraSessions
+        extraSessions.removeAll()
+        for session in extra {
+            await session.close()
+        }
         guard let openSession else { return }
         self.openSession = nil
         await openSession.session.close()

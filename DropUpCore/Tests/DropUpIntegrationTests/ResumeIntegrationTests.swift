@@ -448,9 +448,9 @@ struct ResumeIntegrationTests {
         // The folder is the same folder, not a numbered one, and the finished file was not sent again.
         #expect(serverSize("/ops/\(name)-1") == nil)
         #expect(!carried.uploaded.contains { $0.hasSuffix("/a.txt") })
-        #expect(carried.uploaded.first?.hasSuffix("/b/big.bin") == true)
-        #expect(carried.uploaded.contains { $0.hasSuffix("/d.txt") })
-        let offset = try #require(carried.offsets.first)
+        // The small files after it went at the same time as the big one, so they are most likely done already. The big
+        // one carries on from where it was cut off.
+        let offset = try #require(carried.offset(of: "/b/big.bin"))
         #expect(offset > 0)
     }
 
@@ -606,8 +606,7 @@ struct ResumeIntegrationTests {
         for file in files { #expect(serverFile("/ops/\(name)/\(file.path)") == file.data, "\(file.path)") }
         #expect(serverSize("/ops/\(name)-1") == nil)
         #expect(!carried.uploaded.contains { $0.hasSuffix("/a.txt") })
-        #expect(carried.uploaded.first?.hasSuffix("/b/big.bin") == true)
-        #expect(try #require(carried.offsets.first) > 0)
+        #expect(try #require(carried.offset(of: "/b/big.bin")) > 0)
     }
 }
 
@@ -639,6 +638,11 @@ final class Switchboard: @unchecked Sendable {
 
     var offsets: [Int64] { lock.withLock { recordedOffsets } }
     var uploaded: [String] { lock.withLock { recordedUploads } }
+
+    /// Where the first upload whose path ends with `suffix` started.
+    func offset(of suffix: String) -> Int64? {
+        lock.withLock { recordedUploads.firstIndex { $0.hasSuffix(suffix) }.map { recordedOffsets[$0] } }
+    }
     var refusedConnections: Int { lock.withLock { refused } }
 
     func connect() throws {
@@ -701,6 +705,8 @@ private final class BreakingSession: ServerSession, @unchecked Sendable {
         self.inner = inner
     }
 
+    var concurrentTransfers: Int { inner.concurrentTransfers }
+    var connectionsForFolders: Int { inner.connectionsForFolders }
     func fileExists(atPath path: String) async throws -> Bool { try await inner.fileExists(atPath: path) }
     func fileSize(atPath path: String) async throws -> Int64? { try await inner.fileSize(atPath: path) }
     func listDirectories(atPath path: String) async throws -> [String] { try await inner.listDirectories(atPath: path) }

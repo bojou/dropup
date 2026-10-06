@@ -158,11 +158,29 @@ def make_server(accepted, modern=False):
     return Server
 
 
+class SteadySFTPServer(asyncssh.SFTPServer):
+    """Lists a folder the way OpenSSH's sftp-server does: an item deleted between reading the folder and looking at the
+    item is left out. asyncssh fails the whole listing with "No such file" instead, so a test listing `drops/` failed
+    now and then while other tests deleted their files there."""
+
+    async def scandir(self, path):
+        local = self.map_path(path)
+        for name in (b".", b".."):
+            yield asyncssh.SFTPName(name, attrs=asyncssh.SFTPAttrs.from_local(os.lstat(os.path.join(local, name))))
+        with os.scandir(local) as entries:
+            for entry in entries:
+                try:
+                    attrs = asyncssh.SFTPAttrs.from_local(entry.stat(follow_symlinks=False))
+                except FileNotFoundError:
+                    continue
+                yield asyncssh.SFTPName(entry.name, attrs=attrs)
+
+
 async def start_sftp(root, accepted):
     key = asyncssh.generate_private_key("ssh-ed25519")
 
     def factory(chan):
-        return asyncssh.SFTPServer(chan, chroot=root.encode())
+        return SteadySFTPServer(chan, chroot=root.encode())
 
     await asyncssh.create_server(
         make_server(accepted), "127.0.0.1", SFTP_PORT, server_host_keys=[key], sftp_factory=factory

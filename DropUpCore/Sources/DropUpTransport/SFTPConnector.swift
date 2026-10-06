@@ -130,6 +130,10 @@ final class SFTPSession: ServerSession, @unchecked Sendable {
     private static let writeSize = 32_000
     private static let writesInFlight = 16
 
+    /// Requests on one SFTP channel are answered by number, so several files can go at once over the one connection.
+    /// A folder of small files is then not held up by the round trips each file needs to open and close.
+    var concurrentTransfers: Int { 8 }
+
     init(ssh: SSHClient, sftp: SFTPClient) {
         self.ssh = ssh
         self.sftp = sftp
