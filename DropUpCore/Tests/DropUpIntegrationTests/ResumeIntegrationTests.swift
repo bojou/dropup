@@ -189,13 +189,13 @@ struct ResumeIntegrationTests {
         #expect(events.last == .succeeded(id: cut.id, remotePath: "/ops/\(cut.name)"))
         #expect(serverFile("/ops/" + cut.name) == cut.data)
         #expect(restarts(events).isEmpty)
-        // It asked the server how much it had, and sent only the rest (SFTP starts a little early, to be sure).
+        // It asked the server how much it had, and sent only the rest (SFTP starts up to 2 MB early, to be sure).
         let offset = try #require(board.offsets.first)
         #expect(offset > 0 && offset <= Int64(cut.partialSize))
         let first = events.compactMap { event -> Int64? in
             if case .progress(_, let progress) = event, progress.bytesSent > 0 { progress.bytesSent } else { nil }
         }.first
-        #expect((first ?? 0) >= offset - 524_288)
+        #expect((first ?? 0) >= offset - 2_048_000)
         // Never a numbered copy next to it, whatever the setting for names that are taken.
         #expect(serverSize("/ops/" + cut.name.replacingOccurrences(of: ".bin", with: "-1.bin")) == nil)
     }
