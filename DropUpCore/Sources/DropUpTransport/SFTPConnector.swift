@@ -128,7 +128,9 @@ final class SFTPSession: ServerSession, @unchecked Sendable {
 
     /// SFTP servers commonly cap a single write at 32 KB (OpenSSH accepts up to 256 KB).
     private static let writeSize = 32_000
-    private static let writesInFlight = 16
+    /// 64 writes keep 2 MB on the way, about what an OpenSSH server takes before it answers. With 16 (512 KB) an upload
+    /// over a 100 ms round trip went no faster than 4.8 MB/s.
+    private static let writesInFlight = 64
 
     /// Requests on one SFTP channel are answered by number, so several files can go at once over the one connection.
     /// A folder of small files is then not held up by the round trips each file needs to open and close.
