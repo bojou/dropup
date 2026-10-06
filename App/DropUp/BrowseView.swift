@@ -983,10 +983,14 @@ private struct DownloadRow: View {
                 if item.state == .downloading, item.totalBytes > 0 {
                     ProgressView(value: item.fraction).controlSize(.small)
                 }
-                Text(detail)
-                    .font(.system(size: 11).monospacedDigit())
-                    .foregroundStyle(isFailure ? Color.red : Color.secondary)
-                    .lineLimit(2)
+                if item.state == .downloading {
+                    // Ticks on its own as well, so the speed goes away when nothing arrives for a while.
+                    TimelineView(.periodic(from: .now, by: 1)) { context in
+                        detailText(detail(now: context.date))
+                    }
+                } else {
+                    detailText(detail(now: Date()))
+                }
             }
             Spacer(minLength: 0)
             trailing
@@ -1014,13 +1018,33 @@ private struct DownloadRow: View {
         }
     }
 
-    private var detail: String {
+    private func detailText(_ text: String) -> some View {
+        Text(text)
+            .font(.system(size: 11).monospacedDigit())
+            .foregroundStyle(isFailure ? Color.red : Color.secondary)
+            .lineLimit(2)
+    }
+
+    private func detail(now: Date) -> String {
         switch item.state {
         case .waiting:
             return item.totalBytes > 0 ? "\(Format.bytes(item.totalBytes)) · Waiting" : "Waiting"
         case .downloading:
-            if item.totalBytes > 0 { return "\(Format.bytes(item.receivedBytes)) of \(Format.bytes(item.totalBytes))" }
-            return Format.bytes(item.receivedBytes)
+            // Like an upload: `12 MB of 100 MB · 9.8 MB/s · 9 s left`.
+            var parts: [String] = []
+            if item.totalBytes > 0 {
+                parts.append("\(Format.bytes(item.receivedBytes)) of \(Format.bytes(item.totalBytes))")
+            } else {
+                parts.append(Format.bytes(item.receivedBytes))
+            }
+            if let speed = item.speed.bytesPerSecond(now: now) {
+                parts.append("\(Format.bytes(Int64(speed)))/s")
+            }
+            if item.totalBytes > 0,
+               let left = ActivityText.timeLeft(item.speed.secondsRemaining(item.totalBytes - item.receivedBytes, now: now)) {
+                parts.append(left)
+            }
+            return parts.joined(separator: " · ")
         case .done(let url):
             return "Saved in \(url.deletingLastPathComponent().lastPathComponent)"
         case .failed(let message):

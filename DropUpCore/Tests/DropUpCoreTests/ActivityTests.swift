@@ -265,6 +265,21 @@ struct UploadActivityTests {
         #expect(activity.secondsRemaining(now: now) == 3.5)
     }
 
+    @Test func aDownloadMeasuresItsOwnSpeed() {
+        var speed = TransferSpeed()
+        #expect(speed.bytesPerSecond(now: t0) == nil)
+        speed.record(0, at: t0)
+        speed.record(4_000_000, at: t0.addingTimeInterval(1))
+        speed.record(10_000_000, at: t0.addingTimeInterval(2))
+        let now = t0.addingTimeInterval(2)
+        #expect(speed.bytesPerSecond(now: now) == 5_000_000)
+        #expect(speed.secondsRemaining(90_000_000, now: now) == 18)
+        // Only the last few seconds count, and nothing moving for a while means no speed at all.
+        speed.record(16_000_000, at: t0.addingTimeInterval(5))
+        #expect(speed.bytesPerSecond(now: t0.addingTimeInterval(5)) == 2_000_000)
+        #expect(speed.bytesPerSecond(now: t0.addingTimeInterval(9)) == nil)
+    }
+
     @Test func badgeIsTheShortUppercaseExtension() {
         #expect(UploadActivity.Item(id: UUID(), fileName: "a.png", totalBytes: 1).badge == "PNG")
         #expect(UploadActivity.Item(id: UUID(), fileName: "movie.webarchive", totalBytes: 1).badge == "WEBA")

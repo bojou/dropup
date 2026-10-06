@@ -32,6 +32,9 @@ public struct SFTPConnector: ServerConnector {
             hostKeyValidator: .custom(validator)
         )
         settings.connectTimeout = .seconds(connectTimeout)
+        // How much the server may send before it waits to hear from us, per channel. The library's default, 128 KB, is
+        // what limits downloads: on a link with a 30 ms round trip that is about 2 MB/s however fast the line is.
+        settings.protocolOptions = [.maximumPacketSize(Self.receiveWindow)]
         let finalSettings = settings
 
         let client: SSHClient
@@ -54,6 +57,10 @@ public struct SFTPConnector: ServerConnector {
             throw UploaderError.connectionFailed("The server accepted SSH but doesn't offer SFTP.")
         }
     }
+
+    /// 4 MB. The library uses one number for the window and for the largest packet it takes; servers send packets of a
+    /// few dozen KB anyway.
+    static let receiveWindow = 4 << 20
 
     /// `key` is what the login used, when it signed in with a key: a refusal then says the key was refused, not the password.
     static func map(_ error: Error, key: SSHKeyLoader.Loaded? = nil) -> Error {
@@ -258,9 +265,10 @@ final class SFTPSession: ServerSession, @unchecked Sendable {
         }
     }
 
-    /// Reads are pipelined like uploads: a single request at a time is slow on high-latency links.
+    /// Reads are pipelined like uploads: a single request at a time is slow on high-latency links. 64 reads of 32 KB
+    /// keep 2 MB on the way, half the receive window.
     private static let readSize: UInt32 = 32_000
-    private static let readsInFlight = 16
+    private static let readsInFlight = 64
 
     func download(remotePath: String, to fileURL: URL, progress: @escaping @Sendable (Int64) -> Void) async throws {
         let file: SFTPFile

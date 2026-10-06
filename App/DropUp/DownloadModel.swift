@@ -20,6 +20,7 @@ final class DownloadModel {
         var totalBytes: Int64
         var receivedBytes: Int64 = 0
         var state = State.waiting
+        var speed = TransferSpeed()
 
         var fraction: Double {
             totalBytes > 0 ? min(1, max(0, Double(receivedBytes) / Double(totalBytes))) : 0
@@ -88,6 +89,7 @@ final class DownloadModel {
             update(id) {
                 $0.receivedBytes = progress.bytesSent
                 if progress.totalBytes > 0 { $0.totalBytes = progress.totalBytes }
+                $0.speed.record(progress.bytesSent, at: Date())
             }
         case .succeeded(let id, let url):
             update(id) {
