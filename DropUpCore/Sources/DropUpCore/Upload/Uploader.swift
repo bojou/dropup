@@ -19,8 +19,16 @@ public struct UploadProgress: Sendable, Equatable {
 /// One logged-in connection to the server. Implementations: `FTPSession`, the SFTP session in
 /// `DropUpTransport`, and fakes in tests.
 ///
-/// A session is used by one caller at a time. After any error it should be closed and discarded.
+/// A session is used by one caller at a time, except for the files of a folder transfer: up to
+/// `concurrentTransfers` of those at once. After any error it should be closed and discarded.
 public protocol ServerSession: Sendable {
+    /// How many files of a folder this one session can send or fetch at the same time. The default is 1.
+    var concurrentTransfers: Int { get }
+
+    /// How many connections to the server, this one included, a folder transfer may use at the same time, for a
+    /// session that moves one file at a time. The default is 1.
+    var connectionsForFolders: Int { get }
+
     /// Whether a file (not a folder) exists at `path`.
     func fileExists(atPath path: String) async throws -> Bool
 
@@ -82,6 +90,9 @@ public protocol ServerSession: Sendable {
 }
 
 extension ServerSession {
+    public var concurrentTransfers: Int { 1 }
+    public var connectionsForFolders: Int { 1 }
+
     public func listEntriesWithLinks(atPath path: String) async throws -> [RemoteEntry] {
         try await listEntries(atPath: path)
     }

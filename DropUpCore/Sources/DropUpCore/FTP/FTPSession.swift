@@ -58,6 +58,10 @@ public actor FTPSession: ServerSession {
 
     private static let chunkSize = 256 * 1024
 
+    /// One file at a time per connection, so a folder uses up to four. Many servers allow that many from one address,
+    /// and one that refuses more simply gets fewer.
+    public nonisolated var connectionsForFolders: Int { 4 }
+
     init(control: any ByteStream, opener: any ByteStreamOpener, host: String, replyTimeout: Double) {
         self.control = control
         self.opener = opener

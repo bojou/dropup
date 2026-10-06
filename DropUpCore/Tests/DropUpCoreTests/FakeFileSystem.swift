@@ -48,6 +48,9 @@ final class FakeFileSystem: ServerSession, @unchecked Sendable {
     /// Makes an upload of `path` create the file, then wait until it is cancelled: a half-sent file.
     func hangUpload(of path: String) { lock.withLock { _ = _hangingUploads.insert(path) } }
 
+    /// Lets uploads that were set to hang go through from now on.
+    func stopHanging() { lock.withLock { _hangingUploads = [] } }
+
     /// Makes an upload of `path` create the file, then fail with `error`: a server that runs out of room halfway.
     func failUpload(of path: String, with error: any Error) { lock.withLock { _failingUploads[path] = error } }
 

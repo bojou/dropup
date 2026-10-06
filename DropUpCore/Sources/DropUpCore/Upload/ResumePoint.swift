@@ -21,12 +21,21 @@ public struct ResumePoint: Codable, Equatable, Sendable {
     /// The server holds the file that is being sent (for a folder, the one named by `currentFile`), and it is
     /// this upload's own. Until then `remotePath` may be a name that was free, or a file that was there before.
     public var created: Bool
-    /// A folder: how many files, counted in the order they are sent, were done when this was noted.
+    /// A folder: how many files, counted in the order they are sent, were done when this was noted. Several files go
+    /// at once and finish in any order, so this counts the files up to the first one that wasn't done.
     public var finishedFiles: Int
     /// A folder: a stamp of the names and sizes of its files (`LocalTree.fingerprint`).
     public var fingerprint: String?
-    /// A folder: the file being sent, as its path inside the folder.
+    /// A folder: the first of the files being sent, as its path inside the folder.
     public var currentFile: String?
+    /// A folder: how many files, counted in the order they are sent, had been started. Those from `finishedFiles` up to
+    /// here are done, except the ones in `sendingFiles`. Nil in a note from before several files went at once: then
+    /// only `currentFile` was being sent.
+    public var startedFiles: Int?
+    /// A folder: every file being sent when this was noted, in the order they are sent.
+    public var sendingFiles: [String]?
+    /// A folder: the ones of `sendingFiles` the server holds part of, which are this upload's own.
+    public var partialFiles: [String]?
 
     public init(
         sourcePath: String,
@@ -39,7 +48,10 @@ public struct ResumePoint: Codable, Equatable, Sendable {
         created: Bool = false,
         finishedFiles: Int = 0,
         fingerprint: String? = nil,
-        currentFile: String? = nil
+        currentFile: String? = nil,
+        startedFiles: Int? = nil,
+        sendingFiles: [String]? = nil,
+        partialFiles: [String]? = nil
     ) {
         self.sourcePath = sourcePath
         self.isFolder = isFolder
@@ -52,6 +64,9 @@ public struct ResumePoint: Codable, Equatable, Sendable {
         self.finishedFiles = finishedFiles
         self.fingerprint = fingerprint
         self.currentFile = currentFile
+        self.startedFiles = startedFiles
+        self.sendingFiles = sendingFiles
+        self.partialFiles = partialFiles
     }
 
     /// The name the row shows: the file's, or the folder's with a `/` after it.
@@ -61,16 +76,33 @@ public struct ResumePoint: Codable, Equatable, Sendable {
 
     public var sourceURL: URL { URL(fileURLWithPath: sourcePath, isDirectory: isFolder) }
 
-    /// Where the file that may be half sent is on the server, or nil when this upload has not made one.
-    public var partialPath: String? {
-        guard created, let remotePath else { return nil }
-        guard isFolder else { return remotePath }
-        guard let currentFile else { return nil }
-        return remotePath == "/" ? "/" + currentFile : remotePath + "/" + currentFile
+    /// Where the file that may be half sent is on the server, or nil when this upload has not made one. A folder can
+    /// have several: this is the first of `partialPaths`.
+    public var partialPath: String? { partialPaths.first }
+
+    /// Where the files that may be half sent are on the server: the file, or for a folder each of the files it was in
+    /// the middle of that the server holds. Empty when this upload has not made one.
+    public var partialPaths: [String] {
+        guard let remotePath else { return [] }
+        guard isFolder else { return created ? [remotePath] : [] }
+        return heldFiles.map { remotePath == "/" ? "/" + $0 : remotePath + "/" + $0 }
+    }
+
+    /// A folder: the files being sent, from a note of either kind.
+    var inFlightFiles: [String] {
+        sendingFiles ?? currentFile.map { [$0] } ?? []
+    }
+
+    /// A folder: the files being sent that the server holds part of, from a note of either kind.
+    var heldFiles: [String] {
+        if let partialFiles { return partialFiles }
+        return created ? currentFile.map { [$0] } ?? [] : []
     }
 
     /// Whether anything of this upload is on the server already: a file that is partly or fully there.
-    public var hasProgress: Bool { created || finishedFiles > 0 }
+    public var hasProgress: Bool {
+        created || finishedFiles > 0 || !heldFiles.isEmpty || (startedFiles ?? 0) > inFlightFiles.count + finishedFiles
+    }
 
     /// Whether a file on this Mac is the one that was sent: the same size, and the same modified date to the millisecond.
     func matches(size: Int64, modified: Date?) -> Bool {
