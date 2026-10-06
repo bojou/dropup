@@ -370,15 +370,16 @@ struct ResumeUploadTests {
         defer { temp.remove() }
         let file = try temp.file(named: "big.bin", size: 1000)
         let session = FakeSession(drops: [400, 400, 400, 400])
-        // The first wait fits in the time allowed, the second doesn't.
-        let policy = ReconnectPolicy(delays: [0.05, 30, 30], giveUpAfter: 1, noticeAfter: 0.5)
+        // The first wait fits in the time allowed, the second doesn't. The time allowed is far longer than the CI runner
+        // can stall a test for (over 10 s), and the second wait far longer still, so only the counting decides.
+        let policy = ReconnectPolicy(delays: [0.05, 600, 600], giveUpAfter: 60, noticeAfter: 30)
         let queue = makeQueue(FakeConnector(session: session), reconnect: policy)
 
         let started = Date()
         let all = try await events(of: queue) { await queue.enqueue([file]) }
 
         #expect(session.uploads.count == 2)
-        #expect(Date().timeIntervalSince(started) < 60)
+        #expect(Date().timeIntervalSince(started) < 300)
         #expect(all.contains { if case .failed(_, let failure) = $0 { failure.isInterruption } else { false } })
     }
 
