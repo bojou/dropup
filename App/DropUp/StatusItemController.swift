@@ -206,30 +206,40 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
     }
 
     var popoverWindowForSelfTest: NSWindow? { popover.contentViewController?.view.window }
+    var popoverShownForSelfTest: Bool { popover.isShown }
+    /// Whether the icon looks pressed.
+    var iconPressedForSelfTest: Bool { statusItem.button?.isHighlighted ?? false }
+    /// Called when a window chosen in the popover is about to be built.
+    var selfTestWindowStarting: (() -> Void)?
     #endif
 
     private func openSettings() {
-        WindowOrderKeeper.shared.begin()
-        popover.performClose(nil)
+        closePopoverForWindow()
         onOpenSettings()
     }
 
     private func openBrowse() {
-        WindowOrderKeeper.shared.begin()
-        popover.performClose(nil)
+        closePopoverForWindow()
         onOpenBrowse()
     }
 
     private func openChooseFolder() {
-        WindowOrderKeeper.shared.begin()
-        popover.performClose(nil)
+        closePopoverForWindow()
         onChooseFolder()
     }
 
     private func openUpdate() {
+        closePopoverForWindow()
+        model.updates.showAvailableUpdate()
+    }
+
+    /// Closes the popover for a window that opens in its place.
+    private func closePopoverForWindow() {
         WindowOrderKeeper.shared.begin()
         popover.performClose(nil)
-        model.updates.showAvailableUpdate()
+        #if DEBUG
+        selfTestWindowStarting?()
+        #endif
     }
 
     func popoverWillClose(_ notification: Notification) {
