@@ -1,0 +1,33 @@
+name: Probe open lag
+
+on:
+  push:
+    branches: [open-lag-probe]
+
+jobs:
+  probe:
+    runs-on: macos-15
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - name: Generate Xcode project
+        run: |
+          brew install xcodegen
+          xcodegen generate
+      - name: Build app
+        run: xcodebuild -project DropUp.xcodeproj -scheme DropUp -configuration Release -destination 'platform=macOS' -derivedDataPath build CODE_SIGNING_ALLOWED=NO build
+      - name: Time opening windows
+        run: |
+          swiftc -o "$RUNNER_TEMP/many" scripts/probe-many-windows.swift
+          APP=build/Build/Products/Release/DropUp.app/Contents/MacOS/DropUp
+          export DROPUP_PROBE_OPEN=1
+          run() { DROPUP_PROBE_LABEL="$1" $APP > "$RUNNER_TEMP/$1.log" 2>&1 || true; grep PROBE "$RUNNER_TEMP/$1.log" || tail -50 "$RUNNER_TEMP/$1.log"; }
+          run plain-keeper
+          DROPUP_PROBE_NOKEEPER=1 run plain-nokeeper
+          "$RUNNER_TEMP/many" 120 & MANY=$!
+          sleep 3
+          run many-keeper
+          DROPUP_PROBE_NOKEEPER=1 run many-nokeeper
+          run many-keeper-2
+          DROPUP_PROBE_NOKEEPER=1 run many-nokeeper-2
+          kill $MANY || true

@@ -31,6 +31,10 @@ final class WindowCoordinator: NSObject, NSWindowDelegate {
     }
     #endif
 
+    var probeWindows: [String: NSWindow?] {
+        ["settings": settingsWindow, "browse": browseWindow, "choose": chooseWindow]
+    }
+
     init(model: AppModel) {
         self.model = model
         super.init()
@@ -51,6 +55,7 @@ final class WindowCoordinator: NSObject, NSWindowDelegate {
         if settingsWindow == nil {
             let view = SettingsView(model: model) { [weak self] in self?.settingsWindow?.close() }
             settingsWindow = makeWindow(title: "DropUp Settings", content: view)
+            Probe.mark("built")
         }
         present(settingsWindow)
     }
@@ -59,6 +64,7 @@ final class WindowCoordinator: NSObject, NSWindowDelegate {
     func showBrowse() {
         if browseWindow == nil {
             guard let browse = model.makeBrowseModel() else { return }
+            Probe.mark("browseModel")
             browseModel = browse
             model.onUploadSucceeded = { [weak browse] remotePath in
                 // A file that just landed in the folder on screen should appear without a manual reload.
@@ -71,6 +77,7 @@ final class WindowCoordinator: NSObject, NSWindowDelegate {
             window.contentMinSize = BrowseView.minimumSize
             window.center()
             browseWindow = window
+            Probe.mark("built")
         }
         present(browseWindow)
     }
@@ -80,6 +87,7 @@ final class WindowCoordinator: NSObject, NSWindowDelegate {
     func showChooseFolder() {
         if chooseWindow == nil {
             guard let browse = model.makeBrowseModel(purpose: .chooseFolder) else { return }
+            Probe.mark("browseModel")
             chooseModel = browse
             let view = BrowseView(model: model, browse: browse, finishChoosing: { [weak self] in self?.chooseWindow?.close() })
             let window = makeWindow(title: "Choose Upload Folder", content: view)
@@ -88,6 +96,7 @@ final class WindowCoordinator: NSObject, NSWindowDelegate {
             window.contentMinSize = BrowseView.minimumSize
             window.center()
             chooseWindow = window
+            Probe.mark("built")
         }
         present(chooseWindow)
     }
@@ -111,11 +120,13 @@ final class WindowCoordinator: NSObject, NSWindowDelegate {
     private func present(_ window: NSWindow?) {
         guard let window else { return }
         WindowOrderKeeper.shared.begin(asking: window)
+        Probe.mark("keeperBegin")
         if window.isMiniaturized { window.deminiaturize(nil) }
         (window as? DropUpWindow)?.stopHoldingBack()
         Self.raise(window)
+        Probe.mark("raised")
         // The activation can land after the window was ordered in, so ask once more.
-        Task { @MainActor in Self.raise(window) }
+        Task { @MainActor in Self.raise(window); Probe.mark("raisedAgain") }
     }
 
     private static func raise(_ window: NSWindow) {

@@ -50,6 +50,9 @@ final class WindowOrderKeeper {
     /// The app is about to do something that can move windows: open or close one, show or hide the popover, or show an
     /// alert. `window` is the one the person asked for, which comes forward; `closing` is one that is going away.
     func begin(asking window: NSWindow? = nil, closing: NSWindow? = nil) {
+        if Probe.keeperOff { return }
+        let t0 = Probe.now()
+        defer { Probe.beginTime += Probe.now() - t0; Probe.beginCalls += 1 }
         if !isWatching || baseline.isEmpty {
             baseline = Self.windowsOnScreen()
             asked = []
@@ -103,6 +106,8 @@ final class WindowOrderKeeper {
     /// Looks at the stack and puts back every window that came forward without being asked for.
     private func look() {
         guard isWatching else { return }
+        let t0 = Probe.now()
+        defer { Probe.lookTime += Probe.now() - t0; Probe.lookCalls += 1 }
         lastLook = Self.now
         let askedNumbers = Set(asked.compactMap { $0.window?.windowNumber })
         let restores = WindowStack.restores(before: baseline, now: Self.windowsOnScreen(), ownProcess: getpid(), allowed: askedNumbers)
@@ -202,6 +207,8 @@ final class WindowOrderKeeper {
     /// windows kept here (an update window, a file chooser) counts like a window of another app. Names and contents are
     /// not read.
     static func windowsOnScreen() -> [StackedWindow] {
+        let t0 = Probe.now()
+        defer { Probe.stackTime += Probe.now() - t0; Probe.stackCalls += 1 }
         let ownProcess = getpid()
         let list = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] ?? []
         return list.compactMap { entry in

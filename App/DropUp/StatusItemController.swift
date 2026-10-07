@@ -216,18 +216,30 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
     var selfTestWindowStarting: (() -> Void)?
     #endif
 
+    /// PROBE: clicking a tile in the popover, in any build.
+    func probeChoose(_ name: String) {
+        switch name {
+        case "settings": openSettings()
+        case "browse": openBrowse()
+        default: openChooseFolder()
+        }
+    }
+
     private func openSettings() {
         closePopoverForWindow()
+        Probe.mark("popoverClosed")
         onOpenSettings()
     }
 
     private func openBrowse() {
         closePopoverForWindow()
+        Probe.mark("popoverClosed")
         onOpenBrowse()
     }
 
     private func openChooseFolder() {
         closePopoverForWindow()
+        Probe.mark("popoverClosed")
         onChooseFolder()
     }
 
