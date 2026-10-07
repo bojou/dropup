@@ -21,6 +21,8 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
     private static let dotEdge: CGFloat = 1
     private var clickAwayMonitor: Any?
     private var escapeMonitor: Any?
+    /// The popover is open, as far as the icon's look goes: false from the moment it starts to close, while it fades.
+    private var popoverOpen = false
 
     init(
         model: AppModel,
@@ -103,7 +105,7 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
         guard let button = statusItem.button else { return }
         button.image = StatusIcon.image(for: state)
         button.appearsDisabled = false
-        button.highlight(highlighted || popover.isShown)
+        button.highlight(highlighted || popoverOpen)
         badge.isHidden = state != .failed
         let newVersion = model.updates.availableVersion
         updateBadge.isHidden = newVersion == nil || state == .failed
@@ -148,6 +150,7 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
         } else if let button = statusItem.button {
             WindowOrderKeeper.shared.begin()
             popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
+            popoverOpen = true
             popover.contentViewController?.view.window?.makeKey()
             // After the popover is up and has the keyboard: activating raises the app's key window, and activating
             // first made that a Settings or Browse window hidden behind other apps instead of the popover.
@@ -233,18 +236,31 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
         model.updates.showAvailableUpdate()
     }
 
-    /// Closes the popover for a window that opens in its place.
+    /// Closes the popover for a window that opens in its place. Building the window keeps the app busy for a moment, and
+    /// the popover's fade can't end before it has, so the icon lets go of its pressed look here rather than when the
+    /// popover is gone.
     private func closePopoverForWindow() {
         WindowOrderKeeper.shared.begin()
+        letGoOfIcon()
         popover.performClose(nil)
         #if DEBUG
         selfTestWindowStarting?()
         #endif
     }
 
+    /// The icon stops looking pressed, on screen at once: the app may be busy for a moment after this.
+    private func letGoOfIcon() {
+        popoverOpen = false
+        guard let button = statusItem.button else { return }
+        button.highlight(model.isDragOverIcon || model.panelState != .hidden)
+        button.display()
+        CATransaction.flush()
+    }
+
     func popoverWillClose(_ notification: Notification) {
         // When the popover goes, macOS hands the keyboard to another window of the app, and may bring it forward.
         WindowOrderKeeper.shared.begin()
+        letGoOfIcon()
     }
 
     func popoverDidClose(_ notification: Notification) {
