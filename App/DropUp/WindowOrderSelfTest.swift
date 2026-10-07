@@ -219,8 +219,41 @@ enum WindowOrderSelfTest {
                    "opened=\(opened) afterClose=\(closed) | openedOnboarding=\(openedOnboarding) afterClose=\(closedOnboarding)", bad)
         }
 
-        // A second run with another setting of the system (Prefer tabs when opening documents) only needs the sequences.
+        /// The popover is open and `name` is chosen in it. The icon stops looking pressed before the window is built,
+        /// which can keep the app busy for a moment, and does not look pressed again while the popover fades.
+        func caseIconLetsGo(_ name: String) async {
+            await closeAll()
+            await openPopover()
+            let pressed = status.iconPressedForSelfTest
+            var atWindowStart: Bool?
+            status.selfTestWindowStarting = { atWindowStart = status.iconPressedForSelfTest }
+            let started = Date()
+            status.selfTestChoose(name)
+            let built = Date().timeIntervalSince(started)
+            status.selfTestWindowStarting = nil
+            var pressedLater: [String] = []
+            var popoverGone: Double?
+            while Date().timeIntervalSince(started) < 1 {
+                let at = Date().timeIntervalSince(started)
+                if status.iconPressedForSelfTest { pressedLater.append(String(format: "%.2f", at)) }
+                if popoverGone == nil, !status.popoverShownForSelfTest { popoverGone = at }
+                await sleep(0.01)
+            }
+            var bad: [String] = []
+            if !pressed { bad.append("the icon did not look pressed while the popover was open") }
+            if atWindowStart != false { bad.append("the icon still looked pressed when \(name) started to open") }
+            if !pressedLater.isEmpty { bad.append("the icon looked pressed after the click, at \(pressedLater.prefix(3).joined(separator: ", ")) s") }
+            let start = atWindowStart.map { "\($0)" } ?? "never"
+            let gone = popoverGone.map { String(format: "%.3fs", $0) } ?? "no"
+            report("icon lets go when \(name) is chosen",
+                   "pressed=\(pressed) atWindowStart=\(start) windowBuilt=\(String(format: "%.3fs", built)) popoverGone=\(gone) pressedAfter=\(pressedLater.count) samples",
+                   bad)
+        }
+
+        // A second run with another setting of the system (Prefer tabs when opening documents) only needs the sequences
+        // and the icon.
         let quick = ProcessInfo.processInfo.environment["DROPUP_WINDOW_TEST_QUICK"] != nil
+        for name in ["settings", "browse", "choose"] { await caseIconLetsGo(name) }
         if !quick {
             await caseA("browse")
             await caseB("browse")
