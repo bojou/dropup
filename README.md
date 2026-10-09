@@ -20,11 +20,11 @@ DropUp lives in your menubar and does one thing well: drag a file or a folder on
 - **Browse your server.** Look around, download, rename, move and organize files like in Finder.
 - **Keyboard shortcuts.** Upload what's selected in Finder, what's on your clipboard, or your latest screenshot.
 - **FTP and SFTP.** Sign in with a password or an SSH key. Passwords stay in your Keychain.
-- **Stays out of the way.** No Dock icon, no windows you didn't ask for, and it updates itself.
+- **Stays out of the way.** No Dock icon, no windows you didn't ask for, and a quiet dot on the icon when an update is ready.
 
 ## Download
 
-Get the latest version from the [Releases page](https://github.com/bojou/dropup/releases/latest), open the DMG and drag DropUp into Applications. It's signed and notarized by Apple, so it opens without warnings.
+Get the latest version from the [Releases page](https://github.com/bojou/dropup/releases/latest).
 
 ## Requirements
 
