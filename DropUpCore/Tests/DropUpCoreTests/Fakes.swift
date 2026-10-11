@@ -307,6 +307,7 @@ final class FakeNetworkWatch: NetworkWatch, @unchecked Sendable {
 final class FakeConnector: ServerConnector, ConnectorFactory, @unchecked Sendable {
     private let lock = NSLock()
     private var _connections: [(ServerConfig, String)] = []
+    private var _abandoned = 0
     let session: FakeSession
     let connectError: (any Error)?
     /// How long the first connection takes (a cancel cuts the wait short), for a connection that is slow to come up.
@@ -319,6 +320,8 @@ final class FakeConnector: ServerConnector, ConnectorFactory, @unchecked Sendabl
     }
 
     var connectionCount: Int { lock.withLock { _connections.count } }
+    /// Connections that were given up on while they were still coming up.
+    var abandonedConnections: Int { lock.withLock { _abandoned } }
     var passwords: [String] { lock.withLock { _connections.map(\.1) } }
     var configs: [ServerConfig] { lock.withLock { _connections.map(\.0) } }
 
@@ -327,7 +330,14 @@ final class FakeConnector: ServerConnector, ConnectorFactory, @unchecked Sendabl
             _connections.append((config, password))
             return _connections.count == 1
         }
-        if first, firstConnectMilliseconds > 0 { try await Task.sleep(nanoseconds: firstConnectMilliseconds * 1_000_000) }
+        if first, firstConnectMilliseconds > 0 {
+            do {
+                try await Task.sleep(nanoseconds: firstConnectMilliseconds * 1_000_000)
+            } catch {
+                lock.withLock { _abandoned += 1 }
+                throw error
+            }
+        }
         if let connectError { throw connectError }
         return session
     }

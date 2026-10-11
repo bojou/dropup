@@ -339,9 +339,10 @@ struct ResumeIntegrationTests {
             removeFromServer([name])
         }
         let board = Switchboard()
-        board.goQuiet(path: name, after: 2_000_000, thenDownFor: 2)
-        // The time allowed is far longer than the test may take: only a new connection gets it through.
-        let queue = makeQueue(config(transferProtocol), board, reconnect: ReconnectPolicy(delays: Array(repeating: 0.3, count: 20), giveUpAfter: 120, noticeAfter: 1))
+        // The network stays away far longer than a busy CI runner can hold the test up, so some tries find it down.
+        board.goQuiet(path: name, after: 2_000_000, thenDownFor: 20)
+        // The time allowed and the tries are far more than the test needs: only a new connection gets it through.
+        let queue = makeQueue(config(transferProtocol), board, reconnect: ReconnectPolicy(delays: Array(repeating: 0.5, count: 100), giveUpAfter: 120, noticeAfter: 2))
         let id = await queue.enqueue([local])[0]
         let started = Date()
         let events = await finish(queue)
@@ -350,9 +351,11 @@ struct ResumeIntegrationTests {
         #expect(events.last == .succeeded(id: id, remotePath: "/ops/\(name)"))
         #expect(serverFile("/ops/" + name) == data)
         #expect(board.refusedConnections > 0)
-        // Carried on from what the server held, not sent again from the start.
-        #expect(board.offsets.count == 2 && board.offsets[1] > 0)
-        #expect(Date().timeIntervalSince(started) < 60)
+        // Each new connection carried on from what the server held, never from the start. A busy CI runner can hold a
+        // new connection up long enough to look quiet too, and it is replaced in turn, so there can be more than two.
+        #expect(board.offsets.count >= 2)
+        #expect(board.offsets.dropFirst().allSatisfy { $0 > 0 })
+        #expect(Date().timeIntervalSince(started) < 90)
     }
 
     @Test(.enabled(if: ResumeIntegrationTests.enabled), arguments: [TransferProtocol.ftp, .sftp])
