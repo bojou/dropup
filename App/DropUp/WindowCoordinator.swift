@@ -19,6 +19,7 @@ final class WindowCoordinator: NSObject, NSWindowDelegate {
     private let model: AppModel
     private var onboardingWindow: NSWindow?
     private var settingsWindow: NSWindow?
+    private var settingsConnection: ConnectionEditing?
     private var browseWindow: NSWindow?
     private var browseModel: BrowseModel?
     private var chooseWindow: NSWindow?
@@ -49,7 +50,9 @@ final class WindowCoordinator: NSObject, NSWindowDelegate {
 
     func showSettings() {
         if settingsWindow == nil {
-            let view = SettingsView(model: model) { [weak self] in self?.settingsWindow?.close() }
+            let connection = ConnectionEditing(model: model)
+            settingsConnection = connection
+            let view = SettingsView(model: model, connection: connection) { [weak self] in self?.settingsWindow?.close() }
             settingsWindow = makeWindow(title: "DropUp Settings", content: view)
         }
         present(settingsWindow)
@@ -132,8 +135,13 @@ final class WindowCoordinator: NSObject, NSWindowDelegate {
     func windowWillClose(_ notification: Notification) {
         guard let closing = notification.object as? NSWindow else { return }
         WindowOrderKeeper.shared.begin(closing: closing)
-        // Closing Settings, however it happens, throws away unsaved edits: the next open starts from what is saved.
-        if closing === settingsWindow { settingsWindow = nil }
+        // Closing Settings, however it happens, saves the edit in progress on Connection if the form is complete. One that
+        // is not is dropped: the next open starts from what is saved.
+        if closing === settingsWindow {
+            settingsConnection?.finishEdit()
+            settingsConnection = nil
+            settingsWindow = nil
+        }
         if closing === browseWindow {
             browseWindow = nil
             browseModel?.close()
@@ -148,5 +156,12 @@ final class WindowCoordinator: NSObject, NSWindowDelegate {
             chooseModel?.close()
             chooseModel = nil
         }
+    }
+
+    func windowDidResignKey(_ notification: Notification) {
+        // Going to another window or app finishes the edit in progress on Connection, so a file dropped next goes where
+        // the form says.
+        guard let window = notification.object as? NSWindow, window === settingsWindow else { return }
+        settingsConnection?.finishEdit(showingProblems: false)
     }
 }
