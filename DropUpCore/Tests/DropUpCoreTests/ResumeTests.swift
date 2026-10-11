@@ -5,15 +5,17 @@ import Testing
 /// Carrying on interrupted uploads: from what the server holds, over a lost connection, and after a relaunch.
 struct ResumeUploadTests {
     let config = ServerConfig(transferProtocol: .sftp, host: "example.com", username: "me", remoteDirectory: "/drops")
-    /// Waits are tiny so a test doesn't; what matters is the order of things.
-    let quick = ReconnectPolicy(delays: [0.01, 0.01], giveUpAfter: 5, noticeAfter: 2)
+    /// Waits are tiny so a test doesn't; what matters is the order of things. A connection only counts as quiet after
+    /// far longer than a busy CI runner can hold a test up, so an upload a test holds still is never replaced under it.
+    let quick = ReconnectPolicy(delays: [0.01, 0.01], giveUpAfter: 60, noticeAfter: 30)
 
     private func makeQueue(
         _ connector: FakeConnector,
         preferences: Preferences = Preferences(),
         reconnect: ReconnectPolicy? = nil,
         cancelGrace: TimeInterval = 1.5,
-        password: String? = "secret"
+        password: String? = "secret",
+        network: (any NetworkWatch)? = nil
     ) -> UploadQueue {
         let credentials = InMemoryCredentialStore()
         if let password { try? credentials.setPassword(password, for: config.credentialKey) }
@@ -24,7 +26,8 @@ struct ResumeUploadTests {
             progressInterval: 0,
             cleanupTimeout: 2,
             reconnect: reconnect ?? quick,
-            cancelGrace: cancelGrace
+            cancelGrace: cancelGrace,
+            network: network
         )
     }
 
@@ -365,22 +368,33 @@ struct ResumeUploadTests {
         #expect(Date().timeIntervalSince(started) >= 0.3)
     }
 
-    @Test func theTimeAllowedIsCountedFromTheLastSignOfLife() async throws {
-        let temp = try TempFiles()
-        defer { temp.remove() }
-        let file = try temp.file(named: "big.bin", size: 1000)
-        let session = FakeSession(drops: [400, 400, 400, 400])
-        // The first wait fits in the time allowed, the second doesn't. The time allowed is far longer than the CI runner
-        // can stall a test for (over 10 s), and the second wait far longer still, so only the counting decides.
-        let policy = ReconnectPolicy(delays: [0.05, 600, 600], giveUpAfter: 60, noticeAfter: 30)
-        let queue = makeQueue(FakeConnector(session: session), reconnect: policy)
+    @Test func theLastTryComesAsTheTimeAllowedRunsOut() {
+        let standard = ReconnectPolicy.standard
+        // A connection that went quiet is given up on 15 s after the last sign of life; each try fails at once.
+        var delays = standard.delays[...]
+        var tries: [TimeInterval] = []
+        var now: TimeInterval = 15
+        while let wait = UploadQueue.wait(&delays, idle: now, policy: standard) {
+            now += wait
+            tries.append(now)
+        }
+        // The 60 s wait would end past two minutes, so it is cut short: the last try comes at the two minutes.
+        #expect(tries == [20, 35, 65, 120])
 
-        let started = Date()
-        let all = try await events(of: queue) { await queue.enqueue([file]) }
+        // A connection that broke with an error: the waits fit as they are, and once used up that is the end.
+        delays = standard.delays[...]
+        tries = []
+        now = 0
+        while let wait = UploadQueue.wait(&delays, idle: now, policy: standard) {
+            now += wait
+            tries.append(now)
+        }
+        #expect(tries == [5, 20, 50, 110])
 
-        #expect(session.uploads.count == 2)
-        #expect(Date().timeIntervalSince(started) < 300)
-        #expect(all.contains { if case .failed(_, let failure) = $0 { failure.isInterruption } else { false } })
+        // Past the time allowed there is no try, however many waits are left.
+        delays = standard.delays[...]
+        #expect(UploadQueue.wait(&delays, idle: 120, policy: standard) == nil)
+        #expect(delays.count == 4)
     }
 
     @Test func aServerThatNeverAnsweredIsNotWaitedFor() async throws {
@@ -435,13 +449,35 @@ struct ResumeUploadTests {
 
     // MARK: A connection that goes quiet
 
-    @Test func aStalledUploadSaysItIsWaitingAndGivesUpInsideTheWindow() async throws {
+    @Test func aConnectionThatGoesQuietIsReplacedByANewOne() async throws {
         let temp = try TempFiles()
         defer { temp.remove() }
         let file = try temp.file(named: "big.bin", size: 1000)
-        // The server holds the file and then nothing moves, with no error: a connection that went quiet.
+        // The server holds 400 bytes and then nothing moves, with no error: the network went away and nothing said so.
+        let session = FakeSession(goesQuiet: [400])
+        let connector = FakeConnector(session: session)
+        let policy = ReconnectPolicy(delays: [0.05], giveUpAfter: 60, noticeAfter: 0.3)
+        let queue = makeQueue(connector, reconnect: policy)
+        var id = UUID()
+
+        let started = Date()
+        let all = try await events(of: queue) { id = await queue.enqueue([file])[0] }
+
+        // Long before the time allowed is up, a new connection carries on from what the server holds.
+        #expect(all.contains(.waitingForConnection(id: id)))
+        #expect(all.last == .succeeded(id: id, remotePath: "/drops/big.bin"))
+        #expect(connector.connectionCount == 2)
+        #expect(session.uploadOffsets == [0, 400])
+        #expect(Date().timeIntervalSince(started) < 30)
+    }
+
+    @Test func aConnectionThatStaysQuietUsesUpTheTriesAndCanBeResumed() async throws {
+        let temp = try TempFiles()
+        defer { temp.remove() }
+        let file = try temp.file(named: "big.bin", size: 1000)
+        // Every connection goes quiet once the server holds the file.
         let session = FakeSession(hangAfterCreatingFile: true)
-        let policy = ReconnectPolicy(delays: [0.01], giveUpAfter: 0.4, noticeAfter: 0.1)
+        let policy = ReconnectPolicy(delays: [0.01], giveUpAfter: 60, noticeAfter: 0.2)
         let queue = makeQueue(FakeConnector(session: session), reconnect: policy)
         var id = UUID()
 
@@ -449,10 +485,71 @@ struct ResumeUploadTests {
         let all = try await events(of: queue) { id = await queue.enqueue([file])[0] }
 
         #expect(all.contains(.waitingForConnection(id: id)))
-        #expect(Date().timeIntervalSince(started) < 60)
+        #expect(Date().timeIntervalSince(started) < 30)
         #expect(all.last == .failed(id: id, .connectionLost("The server stopped responding.")))
         #expect(session.deletions.isEmpty)
-        #expect(session.uploads.count == 1)
+        // The first try and one after the only wait.
+        #expect(session.uploads.count == 2)
+    }
+
+    @Test func aTryThatIsStillConnectingIsNotTakenForAQuietOne() async throws {
+        let temp = try TempFiles()
+        defer { temp.remove() }
+        let file = try temp.file(named: "a.txt")
+        // The connection takes far longer to come up than a connection may be quiet. It has a time limit of its own.
+        let connector = FakeConnector(firstConnectMilliseconds: 1_000)
+        let policy = ReconnectPolicy(delays: [0.01], giveUpAfter: 60, noticeAfter: 0.2)
+        let queue = makeQueue(connector, reconnect: policy)
+        var id = UUID()
+
+        let all = try await events(of: queue) { id = await queue.enqueue([file])[0] }
+
+        // The row says it is waiting meanwhile, and the one connection is used once it is there.
+        #expect(all.contains(.waitingForConnection(id: id)))
+        #expect(all.last == .succeeded(id: id, remotePath: "/drops/a.txt"))
+        #expect(connector.connectionCount == 1)
+    }
+
+    @Test func theNetworkComingBackEndsTheWaitAtOnce() async throws {
+        let temp = try TempFiles()
+        defer { temp.remove() }
+        let file = try temp.file(named: "big.bin", size: 1000)
+        let session = FakeSession(drops: [400])
+        let network = FakeNetworkWatch()
+        // The next try would come in ten minutes.
+        let policy = ReconnectPolicy(delays: [600], giveUpAfter: 1000, noticeAfter: 500)
+        let queue = makeQueue(FakeConnector(session: session), reconnect: policy, network: network)
+        var id = UUID()
+
+        let started = Date()
+        let all = try await events(of: queue) {
+            id = await queue.enqueue([file])[0]
+            try await eventually { network.waiters == 1 }
+            network.comeBack()
+        }
+
+        #expect(all.last == .succeeded(id: id, remotePath: "/drops/big.bin"))
+        #expect(session.uploadOffsets == [0, 400])
+        #expect(Date().timeIntervalSince(started) < 30)
+        // The network is only watched while an upload waits for it.
+        #expect(network.waits == 1)
+        #expect(network.waiters == 0)
+    }
+
+    @Test func aWaitThatRunsOutStopsWatchingTheNetwork() async throws {
+        let temp = try TempFiles()
+        defer { temp.remove() }
+        let file = try temp.file(named: "big.bin", size: 1000)
+        let session = FakeSession(drops: [400])
+        let network = FakeNetworkWatch()
+        let queue = makeQueue(FakeConnector(session: session), reconnect: ReconnectPolicy(delays: [0.05], giveUpAfter: 60, noticeAfter: 30), network: network)
+        var id = UUID()
+
+        let all = try await events(of: queue) { id = await queue.enqueue([file])[0] }
+
+        #expect(all.last == .succeeded(id: id, remotePath: "/drops/big.bin"))
+        #expect(network.waits == 1)
+        #expect(network.waiters == 0)
     }
 
     @Test func aTransferThatCantSeeACancelIsClosedUnder() async throws {
@@ -638,6 +735,28 @@ struct ResumeUploadTests {
         #expect(all.contains(.cancelled(id: id)))
         #expect(!all.contains(.paused(id: id)))
         #expect(session.deletions == ["/drops/big.bin"])
+    }
+
+    @Test func pausingWhileItWaitsForTheNetworkStopsTheWaiting() async throws {
+        let temp = try TempFiles()
+        defer { temp.remove() }
+        let file = try temp.file(named: "big.bin", size: 1000)
+        let session = FakeSession(drops: [400])
+        let network = FakeNetworkWatch()
+        let queue = makeQueue(FakeConnector(session: session), reconnect: ReconnectPolicy(delays: [600], giveUpAfter: 1000, noticeAfter: 500), network: network)
+        var id = UUID()
+
+        let started = Date()
+        let all = try await events(of: queue) {
+            id = await queue.enqueue([file])[0]
+            try await eventually { network.waiters == 1 }
+            await queue.pause(id)
+        }
+
+        #expect(all.last == .paused(id: id))
+        #expect(session.uploads.count == 1)
+        #expect(network.waiters == 0)
+        #expect(Date().timeIntervalSince(started) < 30)
     }
 
     @Test func pausingSomethingThatIsNotRunningDoesNothing() async throws {

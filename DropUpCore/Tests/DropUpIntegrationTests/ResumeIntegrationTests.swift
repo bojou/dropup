@@ -329,6 +329,33 @@ struct ResumeIntegrationTests {
     }
 
     @Test(.enabled(if: ResumeIntegrationTests.enabled), arguments: [TransferProtocol.ftp, .sftp])
+    func aConnectionThatGoesQuietIsReplacedOnceTheNetworkIsBack(_ transferProtocol: TransferProtocol) async throws {
+        let name = uniqueName()
+        let local = FileManager.default.temporaryDirectory.appendingPathComponent(name)
+        let data = randomData(6_000_000)
+        try data.write(to: local)
+        defer {
+            try? FileManager.default.removeItem(at: local)
+            removeFromServer([name])
+        }
+        let board = Switchboard()
+        board.goQuiet(path: name, after: 2_000_000, thenDownFor: 2)
+        // The time allowed is far longer than the test may take: only a new connection gets it through.
+        let queue = makeQueue(config(transferProtocol), board, reconnect: ReconnectPolicy(delays: Array(repeating: 0.3, count: 20), giveUpAfter: 120, noticeAfter: 1))
+        let id = await queue.enqueue([local])[0]
+        let started = Date()
+        let events = await finish(queue)
+
+        #expect(events.contains(.waitingForConnection(id: id)))
+        #expect(events.last == .succeeded(id: id, remotePath: "/ops/\(name)"))
+        #expect(serverFile("/ops/" + name) == data)
+        #expect(board.refusedConnections > 0)
+        // Carried on from what the server held, not sent again from the start.
+        #expect(board.offsets.count == 2 && board.offsets[1] > 0)
+        #expect(Date().timeIntervalSince(started) < 60)
+    }
+
+    @Test(.enabled(if: ResumeIntegrationTests.enabled), arguments: [TransferProtocol.ftp, .sftp])
     func anOutageThatOutlastsTheTriesFailsAndCanBeResumedWhenTheNetworkIsBack(_ transferProtocol: TransferProtocol) async throws {
         let name = uniqueName()
         let local = FileManager.default.temporaryDirectory.appendingPathComponent(name)
@@ -631,6 +658,13 @@ final class Switchboard: @unchecked Sendable {
     /// upload then waits, as one that is being paused does, until the queue lets go of it.
     func hold(path: String, after: Int64) {
         lock.withLock { cuts.append((path, after, 0, true)) }
+    }
+
+    /// Like `cut`, but nothing says the connection is lost: once the server holds `after` bytes the real connection is
+    /// closed, the upload hears nothing more until the queue lets go of it, and no connection can be made for
+    /// `thenDownFor` seconds. That is what the network going away looks like.
+    func goQuiet(path: String, after: Int64, thenDownFor down: TimeInterval) {
+        lock.withLock { cuts.append((path, after, down, true)) }
     }
 
     func networkIsDown() { lock.withLock { downUntil = .distantFuture } }

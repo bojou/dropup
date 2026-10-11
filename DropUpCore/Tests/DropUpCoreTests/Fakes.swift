@@ -30,6 +30,7 @@ final class FakeSession: ServerSession, @unchecked Sendable {
     private var _sizes: [String: Int64]
     private var _offsets: [Int64] = []
     private var _drops: [Int64]
+    private var _quiet: [Int64]
     private var _sizeFailure: (any Error)?
     private let refusesToResume: Bool
     private let stuckUntilClosed: Bool
@@ -53,6 +54,9 @@ final class FakeSession: ServerSession, @unchecked Sendable {
     ///   - sizes: files the server already holds, with the number of bytes they have (a partly sent upload, say).
     ///   - drops: for each upload in turn, the number of bytes the server holds when the connection breaks, which makes
     ///     that upload fail with a lost connection. Uploads after the list is used up go through.
+    ///   - goesQuiet: for each upload in turn, the number of bytes the server holds when the connection goes quiet: no
+    ///     error comes and nothing moves until the upload is cancelled, as when the network goes away. Uploads after the
+    ///     list is used up go through.
     ///   - refusesToResume: makes an upload that starts in the middle of a file fail with `cannotResume`.
     ///   - stuckUntilClosed: after creating the file the upload waits for `close()`, deaf to a cancel, like a transfer on a dead link.
     init(
@@ -73,12 +77,14 @@ final class FakeSession: ServerSession, @unchecked Sendable {
         makeDirectoryDelayMilliseconds: UInt64 = 0,
         sizes: [String: Int64] = [:],
         drops: [Int64] = [],
+        goesQuiet: [Int64] = [],
         refusesToResume: Bool = false,
         stuckUntilClosed: Bool = false
     ) {
         _existing = existing.union(sizes.keys)
         _sizes = sizes
         _drops = drops
+        _quiet = goesQuiet
         self.refusesToResume = refusesToResume
         self.stuckUntilClosed = stuckUntilClosed
         self.folders = folders
@@ -164,11 +170,11 @@ final class FakeSession: ServerSession, @unchecked Sendable {
     }
 
     func upload(fileURL: URL, to remotePath: String, startingAt offset: Int64, progress: @escaping @Sendable (Int64) -> Void) async throws {
-        let drop: Int64? = lock.withLock {
+        let (drop, quiet): (Int64?, Int64?) = lock.withLock {
             _closed = false
             _uploads.append(remotePath)
             _offsets.append(offset)
-            return _drops.isEmpty ? nil : _drops.removeFirst()
+            return (_drops.isEmpty ? nil : _drops.removeFirst(), _quiet.isEmpty ? nil : _quiet.removeFirst())
         }
         if let error { throw error }
         if offset > 0, refusesToResume { throw UploaderError.cannotResume }
@@ -191,6 +197,11 @@ final class FakeSession: ServerSession, @unchecked Sendable {
             throw UploaderError.connectionFailed("The connection was lost.")
         }
         if hangAfterCreatingFile { try await Self.hang() }
+        if let quiet, quiet < size {
+            lock.withLock { _sizes[remotePath] = quiet }
+            progress(quiet)
+            try await Self.hang()
+        }
         if uploadDelayMilliseconds > 0 { try await Task.sleep(nanoseconds: uploadDelayMilliseconds * 1_000_000) }
         if let drop, drop < size {
             lock.withLock { _sizes[remotePath] = drop }
@@ -250,6 +261,44 @@ final class FakeSession: ServerSession, @unchecked Sendable {
         lock.withLock {
             _closeCount += 1
             _closed = true
+        }
+    }
+}
+
+/// A network that comes back when the test says so, and counts who is waiting for it.
+final class FakeNetworkWatch: NetworkWatch, @unchecked Sendable {
+    private let lock = NSLock()
+    private var waiting: [UUID: CheckedContinuation<Void, Never>] = [:]
+    private var _waits = 0
+
+    /// How many waits are going on now.
+    var waiters: Int { lock.withLock { waiting.count } }
+    /// How many waits there have been.
+    var waits: Int { lock.withLock { _waits } }
+
+    func comeBack() {
+        let all = lock.withLock {
+            defer { waiting.removeAll() }
+            return Array(waiting.values)
+        }
+        for continuation in all { continuation.resume() }
+    }
+
+    func waitUntilBack() async {
+        let id = UUID()
+        await withTaskCancellationHandler {
+            await withCheckedContinuation { continuation in
+                let cancelled = lock.withLock {
+                    _waits += 1
+                    if Task.isCancelled { return true }
+                    waiting[id] = continuation
+                    return false
+                }
+                if cancelled { continuation.resume() }
+            }
+        } onCancel: {
+            let continuation = lock.withLock { waiting.removeValue(forKey: id) }
+            continuation?.resume()
         }
     }
 }

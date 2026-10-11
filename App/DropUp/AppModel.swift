@@ -87,7 +87,7 @@ final class AppModel {
         self.downloads = DownloadModel(connectors: connectors)
         self.dragExport = DragExport(connectors: connectors)
         self.browser = ServerBrowser(connectors: connectors)
-        self.queue = UploadQueue(settings: settings, credentials: credentials, connectors: connectors)
+        self.queue = UploadQueue(settings: settings, credentials: credentials, connectors: connectors, network: PathNetworkWatch())
         self.config = settings.loadServerConfig()
         self.preferences = settings.loadPreferences()
         self.retiredPasswords = RetiredPasswords(keys: settings.loadRetiredServerKeys())
