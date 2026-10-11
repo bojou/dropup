@@ -81,6 +81,7 @@ public actor UploadQueue {
     private let cleanupTimeout: Double
     private let reconnect: ReconnectPolicy
     private let cancelGrace: TimeInterval
+    private let network: (any NetworkWatch)?
 
     private struct Job {
         let id: UUID
@@ -118,6 +119,8 @@ public actor UploadQueue {
     ///   - cleanupTimeout: seconds to spend deleting the half-sent file after a cancel before giving up.
     ///   - reconnect: how long and how often an upload tries again when the connection is lost.
     ///   - cancelGrace: seconds a transfer gets to notice a cancel before its connection is closed under it.
+    ///   - network: says when the Mac's network comes back, so an upload waiting to try again tries at once. Without it
+    ///     the waits of `reconnect` run their full length.
     public init(
         settings: any SettingsStore,
         credentials: any CredentialStore,
@@ -126,7 +129,8 @@ public actor UploadQueue {
         progressInterval: TimeInterval = 0.1,
         cleanupTimeout: Double = 15,
         reconnect: ReconnectPolicy = .standard,
-        cancelGrace: TimeInterval = 1.5
+        cancelGrace: TimeInterval = 1.5,
+        network: (any NetworkWatch)? = nil
     ) {
         self.settings = settings
         self.credentials = credentials
@@ -136,6 +140,7 @@ public actor UploadQueue {
         self.cleanupTimeout = cleanupTimeout
         self.reconnect = reconnect
         self.cancelGrace = cancelGrace
+        self.network = network
         let (stream, continuation) = AsyncStream.makeStream(of: UploadEvent.self)
         self.events = stream
         self.continuation = continuation
@@ -366,6 +371,7 @@ public actor UploadQueue {
     private func attempts(_ job: Job, written: WrittenFile, run: UploadRun) async -> Ending {
         var delays = reconnect.delays[...]
         while true {
+            run.beginTry()
             let task = Task { try await self.transfer(job, written: written, run: run) }
             active = (job.id, task)
             let watchdog = watch(job.id, run: run, task: task)
@@ -402,20 +408,39 @@ public actor UploadQueue {
         }
     }
 
-    /// The seconds to wait before the next attempt after a lost connection, or nil when it is time to give up: the
-    /// waits are used up, or the next one would end more than `giveUpAfter` seconds after the last sign of life.
+    /// The seconds to wait before the next attempt after a lost connection, or nil when it is time to give up.
     private func nextWait(_ delays: inout ArraySlice<TimeInterval>, run: UploadRun) -> TimeInterval? {
         // Bytes moved since the last time the connection was lost: this is a new outage, with all its tries again.
         if run.takeProgressed() { delays = reconnect.delays[...] }
-        guard let delay = delays.first, run.idle + delay <= reconnect.giveUpAfter else { return nil }
-        delays.removeFirst()
-        return delay
+        return Self.wait(&delays, idle: run.idle, policy: reconnect)
     }
 
-    /// Waits, in a way a cancel or a pause can end. Returns what the user asked for meanwhile, if anything.
+    /// The next of `delays`, or nil when they are used up or `giveUpAfter` seconds have gone by since the last sign of
+    /// life (`idle` ago). A wait that would end later than that is cut short, so the last try comes as the time allowed
+    /// runs out.
+    static func wait(_ delays: inout ArraySlice<TimeInterval>, idle: TimeInterval, policy: ReconnectPolicy) -> TimeInterval? {
+        let left = policy.giveUpAfter - idle
+        guard let delay = delays.first, left > 0 else { return nil }
+        delays.removeFirst()
+        return min(delay, left)
+    }
+
+    /// Waits, in a way a cancel or a pause can end, and that ends early when the network comes back. Returns what the
+    /// user asked for meanwhile, if anything.
     private func sleep(_ id: UUID, seconds: TimeInterval) async -> Stop? {
+        let network = self.network
         let sleeper = Task<String, any Error> {
-            try await Task.sleep(nanoseconds: UInt64(max(seconds, 0) * 1_000_000_000))
+            try await withThrowingTaskGroup(of: Void.self) { group in
+                group.addTask { try await Task.sleep(nanoseconds: UInt64(max(seconds, 0) * 1_000_000_000)) }
+                if let network {
+                    group.addTask {
+                        await network.waitUntilBack()
+                        try Task.checkCancellation()
+                    }
+                }
+                try await group.next()
+                group.cancelAll()
+            }
             return ""
         }
         active = (id, sleeper)
@@ -424,9 +449,12 @@ public actor UploadQueue {
         return stops.removeValue(forKey: id)
     }
 
-    /// One timer for the running transfer, with no polling: it sleeps until the moment a stall could first matter and looks
-    /// again then. Without a sign of life for `noticeAfter` seconds the row says it is waiting for the connection;
-    /// after `giveUpAfter` the transfer is stopped, and closed under if it doesn't let go.
+    /// One timer for the running try: it sleeps until the moment a stall could first matter and looks again then. A
+    /// connection without a sign of life for `noticeAfter` seconds is taken for lost, as when the network goes away and
+    /// nothing says so: the row says it is waiting for the connection and the try is stopped, and closed under if it
+    /// doesn't let go, so the next one starts on a new connection. A try still connecting is left to its own time limit,
+    /// with the row saying it is waiting, and looked at every few seconds for the moment it gets through. After
+    /// `giveUpAfter` any try is stopped.
     private func watch(_ id: UUID, run: UploadRun, task: Task<String, any Error>) -> Task<Void, Never> {
         let policy = reconnect
         let grace = cancelGrace
@@ -435,8 +463,8 @@ public actor UploadQueue {
             var noticed = false
             while !Task.isCancelled {
                 let idle = run.idle
-                if idle >= policy.giveUpAfter {
-                    // A busy machine can wake this up late, past the notice: the row still says why before it fails.
+                if idle >= policy.giveUpAfter || (idle >= policy.noticeAfter && run.isConnected) {
+                    // A busy machine can wake this up late, past the notice: the row still says why before it stops.
                     if !noticed { continuation.yield(.waitingForConnection(id: id)) }
                     run.markStalled()
                     task.cancel()
@@ -450,7 +478,7 @@ public actor UploadQueue {
                         noticed = true
                         continuation.yield(.waitingForConnection(id: id))
                     }
-                    wait = policy.giveUpAfter - idle
+                    wait = min(policy.giveUpAfter - idle, policy.noticeAfter / 5)
                 } else {
                     noticed = false
                     wait = policy.noticeAfter - idle
@@ -619,6 +647,8 @@ public actor UploadQueue {
         let tree: LocalTree
         do {
             // Normally finished long ago, since reading started when the folder was dropped. A cancel stops the reading too.
+            // The connection is quiet meanwhile for a reason of its own, so that is not taken for a lost one.
+            run.busyLocally()
             let scan = job.scan ?? Self.readFolder(job.fileURL, id: job.id, continuation: continuation)
             tree = try await withTaskCancellationHandler { try await scan.value } onCancel: { scan.cancel() }
         } catch let error as FileOperationError {
@@ -628,7 +658,7 @@ public actor UploadQueue {
         } catch {
             throw UploadFailure.unsupportedItem
         }
-        run.touch()
+        run.markContact()
 
         let fingerprint = tree.fingerprint
         let total = tree.totalBytes
@@ -1006,7 +1036,8 @@ public struct ReconnectPolicy: Sendable {
     public var delays: [TimeInterval]
     /// Seconds without a sign of life after which the upload gives up and can be resumed by hand.
     public var giveUpAfter: TimeInterval
-    /// Seconds without a sign of life after which the row says it is waiting for the connection.
+    /// Seconds without a sign of life after which the row says it is waiting for the connection, and an open connection
+    /// is taken for lost and replaced by a new one.
     public var noticeAfter: TimeInterval
 
     public init(delays: [TimeInterval], giveUpAfter: TimeInterval, noticeAfter: TimeInterval) {
@@ -1015,7 +1046,8 @@ public struct ReconnectPolicy: Sendable {
         self.noticeAfter = noticeAfter
     }
 
-    /// Tries again after 5, 15, 30 and 60 seconds, and gives up two minutes after the last byte went through.
+    /// Tries again after 5, 15, 30 and 60 seconds, and gives up two minutes after the last sign of life. A connection that
+    /// goes quiet counts as lost after 15 seconds.
     public static let standard = ReconnectPolicy(delays: [5, 15, 30, 60], giveUpAfter: 120, noticeAfter: 15)
 }
 
@@ -1033,6 +1065,7 @@ final class UploadRun: @unchecked Sendable {
     private var lastSent: Int64?
     private var progressed = false
     private var contacted = false
+    private var connected = false
     private var stalled = false
     private var current: ResumePoint?
 
@@ -1073,12 +1106,31 @@ final class UploadRun: @unchecked Sendable {
         }
     }
 
+    /// A new try begins, without a connection yet.
+    func beginTry() {
+        lock.withLock { connected = false }
+    }
+
+    /// The try got its connection. That is a sign of life: a quiet connection gets its time from here.
     func markContact() {
-        lock.withLock { contacted = true }
+        lock.withLock {
+            contacted = true
+            connected = true
+            lastSign = Uptime.now
+        }
     }
 
     /// Whether a connection to the server was ever made for this upload.
     var hadContact: Bool { lock.withLock { contacted } }
+
+    /// The try is busy on this Mac with its connection idle (reading a folder): until `markContact`, quiet is not taken for
+    /// a lost connection.
+    func busyLocally() {
+        lock.withLock { connected = false }
+    }
+
+    /// Whether the try under way has its connection, and is using it.
+    var isConnected: Bool { lock.withLock { connected } }
 
     func markStalled() {
         lock.withLock { stalled = true }

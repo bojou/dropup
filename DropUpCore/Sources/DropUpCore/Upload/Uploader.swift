@@ -118,6 +118,14 @@ public protocol ConnectorFactory: Sendable {
     func connector(for transferProtocol: TransferProtocol) -> any ServerConnector
 }
 
+/// Tells an upload that is waiting to try again that the Mac's network has come back, so it tries at once instead of
+/// waiting out the rest of its pause. The app uses `PathNetworkWatch` from `DropUpTransport`.
+public protocol NetworkWatch: Sendable {
+    /// Returns once the network comes back, or changes to another one that works, after the call. Returns soon after
+    /// the calling task is cancelled. Watches only while it is waited on.
+    func waitUntilBack() async
+}
+
 public enum UploaderError: Error, Equatable, Sendable {
     case connectionFailed(String)
     case authenticationFailed
