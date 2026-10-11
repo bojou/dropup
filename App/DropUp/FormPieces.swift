@@ -8,22 +8,51 @@ struct FormField: View {
     @Binding var text: String
     var prompt = ""
     var secure = false
+    /// Runs once the person is done with the field (see `onEditFinished`).
+    var finished: (() -> Void)?
 
-    init(_ label: String, text: Binding<String>, prompt: String = "", secure: Bool = false) {
+    init(_ label: String, text: Binding<String>, prompt: String = "", secure: Bool = false, finished: (() -> Void)? = nil) {
         self.label = label
         self._text = text
         self.prompt = prompt
         self.secure = secure
+        self.finished = finished
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 5) {
             Text(label).font(.system(size: 12, weight: .medium)).foregroundStyle(.secondary)
             if secure {
-                SecureField("", text: $text, prompt: Text(prompt)).textFieldStyle(.roundedBorder)
+                SecureField("", text: $text, prompt: Text(prompt)).textFieldStyle(.roundedBorder).onEditFinished(finished)
             } else {
-                TextField("", text: $text, prompt: Text(prompt)).textFieldStyle(.roundedBorder)
+                TextField("", text: $text, prompt: Text(prompt)).textFieldStyle(.roundedBorder).onEditFinished(finished)
             }
+        }
+    }
+}
+
+extension View {
+    /// Runs `action` once the person is done with this text field: it loses the keyboard, or Return is pressed in it.
+    /// Not at each key, so nothing half typed is acted on. Without an action the field is left as it is.
+    func onEditFinished(_ action: (() -> Void)?) -> some View {
+        modifier(EditFinished(action: action))
+    }
+}
+
+private struct EditFinished: ViewModifier {
+    let action: (() -> Void)?
+    @FocusState private var focused: Bool
+
+    func body(content: Content) -> some View {
+        if let action {
+            content
+                .focused($focused)
+                .onSubmit(action)
+                .onChange(of: focused) { _, isFocused in
+                    if !isFocused { action() }
+                }
+        } else {
+            content
         }
     }
 }
@@ -32,6 +61,8 @@ struct FormField: View {
 /// The key stays where it is; only the location of the file is kept.
 struct KeyFileField: View {
     @Binding var path: String
+    /// Runs after a file has been chosen.
+    var chosen: (() -> Void)?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 5) {
@@ -75,7 +106,10 @@ struct KeyFileField: View {
         }
         NSApp.activate(ignoringOtherApps: true)
         let chosen: (NSApplication.ModalResponse) -> Void = { response in
-            if response == .OK, let url = panel.url { path = url.path }
+            if response == .OK, let url = panel.url {
+                path = url.path
+                chosen?()
+            }
         }
         if let window = NSApp.keyWindow {
             panel.beginSheetModal(for: window, completionHandler: chosen)

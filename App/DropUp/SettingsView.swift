@@ -1,4 +1,5 @@
 import SwiftUI
+import Observation
 import DropUpCore
 
 /// The tabs of the Settings window, in the order they are shown.
@@ -33,22 +34,29 @@ struct SettingsView: View {
     static let size = CGSize(width: 600, height: tabBarHeight + contentHeight)
 
     let model: AppModel
+    let connection: ConnectionEditing
     /// Closes the Settings window.
     let close: () -> Void
     @State private var tab = SettingsTab.general
     /// The tabs that have been shown. A tab is built the first time it is opened and kept from then on, so opening
-    /// Settings builds only the one that shows, and unsaved edits on Connection still survive a peek at the others.
+    /// Settings builds only the one that shows.
     @State private var visited: Set<SettingsTab> = [.general]
 
     var body: some View {
         VStack(spacing: 0) {
-            SettingsTabBar(selection: Binding(get: { tab }, set: { tab = $0; visited.insert($0) }))
+            SettingsTabBar(selection: Binding(get: { tab }, set: { new in
+                // Going to another tab finishes the edit in progress on Connection.
+                if tab == .connection, new != .connection { connection.finishEdit() }
+                tab = new
+                visited.insert(new)
+            }))
                 .frame(height: Self.tabBarHeight - 1)
             Divider()
-            // A tab stays alive once it has been shown, so unsaved edits on Connection survive a peek at the others.
+            // A tab stays alive once it has been shown, so a Connection form not complete enough to save survives a
+            // peek at the others.
             ZStack {
                 if visited.contains(.connection) {
-                    ConnectionSettings(model: model, close: close)
+                    ConnectionSettings(model: model, editing: connection, close: close)
                         .opacity(tab == .connection ? 1 : 0)
                         .disabled(tab != .connection)
                         .accessibilityHidden(tab != .connection)
@@ -118,15 +126,65 @@ private struct SettingsTabButton: View {
     }
 }
 
+/// The Connection tab's form for as long as the Settings window is open. It belongs to the window rather than to the
+/// tab, so that closing the window, however it happens, can save the last edit.
+@MainActor
+@Observable
+final class ConnectionEditing {
+    private let model: AppModel
+    private var editor = ServerEditor(saved: nil, secret: "")
+    /// Whether the form has been filled from what is saved. Not until the tab is first shown, as that reads the Keychain.
+    private var isLoaded = false
+    /// Why the last finished edit could not be saved, until one is.
+    private(set) var saveError: String?
+
+    init(model: AppModel) {
+        self.model = model
+    }
+
+    var draft: ServerDraft {
+        get { editor.draft }
+        set { editor.draft = newValue }
+    }
+
+    /// Fills the form from what is saved, the first time the tab shows. After that it stays as the person left it.
+    func loadIfNeeded() {
+        guard !isLoaded else { return }
+        isLoaded = true
+        editor = ServerEditor(saved: model.config, secret: model.config.map { model.password(for: $0) } ?? "")
+    }
+
+    /// Saves the form if the edit just finished left it complete and different from what is saved (see `ServerEditor`).
+    func finishEdit(showingProblems: Bool = true) {
+        guard isLoaded, let change = editor.finishEdit(showingProblems: showingProblems) else { return }
+        do {
+            try model.save(change.config, secret: change.secret)
+            editor.didSave(change.config, secret: change.secret)
+            saveError = nil
+        } catch {
+            saveError = "Couldn’t save: \(error.localizedDescription)"
+        }
+    }
+
+    /// Takes in a server saved from somewhere else while the window is open, such as a folder picked in Change Folder.
+    func followSavedServer() {
+        guard isLoaded, model.config != editor.saved else { return }
+        editor.savedElsewhere(model.config, secret: model.config.map { model.password(for: $0) } ?? "")
+    }
+}
+
+/// The server. There is no Save button: each edit is saved once it is finished (see `ServerEditor`), like the other
+/// tabs, which apply each change as it is made.
 private struct ConnectionSettings: View {
     let model: AppModel
+    @Bindable var editing: ConnectionEditing
     let close: () -> Void
-    @State private var draft = ServerDraft()
     @State private var tester = ConnectionTester()
     @State private var folders = FolderBrowserModel()
     @State private var showBrowser = false
     @State private var browsePath = "/"
-    @State private var saveError: String?
+
+    private var draft: ServerDraft { editing.draft }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -137,7 +195,11 @@ private struct ConnectionSettings: View {
                             Text("Connection type").font(.system(size: 12, weight: .medium)).foregroundStyle(.secondary)
                             Picker("", selection: Binding(
                                 get: { draft.transferProtocol },
-                                set: { draft.selectProtocol($0) }
+                                set: {
+                                    editing.draft.selectProtocol($0)
+                                    // A type not used before starts empty, which isn't a mistake to point out yet.
+                                    editing.finishEdit(showingProblems: false)
+                                }
                             )) {
                                 Text("SFTP").tag(TransferProtocol.sftp)
                                 Text("FTP").tag(TransferProtocol.ftp)
@@ -146,32 +208,33 @@ private struct ConnectionSettings: View {
                             .labelsHidden()
                             .frame(width: 170)
                         }
-                        LoginMethodPicker(draft: $draft)
+                        LoginMethodPicker(draft: $editing.draft)
                     }
-                    FormField("Display name (optional)", text: $draft.displayName, prompt: "My website")
+                    FormField("Display name (optional)", text: $editing.draft.displayName, prompt: "My website", finished: finish)
                     HStack(alignment: .top, spacing: 12) {
-                        FormField("Host", text: $draft.host, prompt: "files.example.com")
-                        FormField("Port", text: $draft.port).frame(width: 96)
+                        FormField("Host", text: $editing.draft.host, prompt: "files.example.com", finished: finish)
+                        FormField("Port", text: $editing.draft.port, finished: finish).frame(width: 96)
                     }
                     HStack(alignment: .top, spacing: 12) {
-                        FormField("Username", text: $draft.username)
+                        FormField("Username", text: $editing.draft.username, finished: finish)
                         if draft.usesKey {
-                            FormField("Passphrase (optional)", text: $draft.passphrase, secure: true)
+                            FormField("Passphrase (optional)", text: $editing.draft.passphrase, secure: true, finished: finish)
                         } else {
-                            FormField("Password", text: $draft.password, secure: true)
+                            FormField("Password", text: $editing.draft.password, secure: true, finished: finish)
                         }
                     }
                     if draft.usesKey {
-                        KeyFileField(path: $draft.keyFilePath)
+                        KeyFileField(path: $editing.draft.keyFilePath, chosen: finish)
                     }
                     VStack(alignment: .leading, spacing: 5) {
                         Text("Remote folder").font(.system(size: 12, weight: .medium)).foregroundStyle(.secondary)
                         HStack(spacing: 8) {
-                            TextField("", text: $draft.remoteDirectory)
+                            TextField("", text: $editing.draft.remoteDirectory)
                                 .textFieldStyle(.roundedBorder)
                                 .font(.system(size: 12, design: .monospaced))
+                                .onEditFinished(finish)
                             Button("Browse…") {
-                                guard draft.isValid else { draft.showProblems = true; return }
+                                guard draft.isValid else { editing.draft.showProblems = true; return }
                                 browsePath = RemotePath.normalizedDirectory(draft.remoteDirectory)
                                 showBrowser = true
                             }
@@ -182,7 +245,7 @@ private struct ConnectionSettings: View {
 
                     HStack(spacing: 12) {
                         Button("Test Connection") {
-                            draft.showProblems = true
+                            editing.draft.showProblems = true
                             guard draft.isValid else { return }
                             tester.test(draft, using: model.browser)
                         }
@@ -198,22 +261,26 @@ private struct ConnectionSettings: View {
 
             Divider()
             HStack {
-                Text(saveError ?? "Changes apply from the next upload.")
+                Text(editing.saveError ?? "Changes apply from the next upload.")
                     .font(.system(size: 11))
-                    .foregroundStyle(saveError == nil ? Color.secondary : Color.red)
+                    .foregroundStyle(editing.saveError == nil ? Color.secondary : Color.red)
                 Spacer()
-                Button("Cancel", action: close)
-                    .keyboardShortcut(.cancelAction)
-                Button("Save", action: save)
+                Button("Done", action: close)
                     .keyboardShortcut(.defaultAction)
                     .buttonStyle(.borderedProminent)
             }
             .padding(.horizontal, 22)
             .frame(height: 60)
         }
-        .onAppear(perform: load)
+        .onAppear {
+            editing.loadIfNeeded()
+            tester.reset()
+        }
         .onChange(of: draft.config) { tester.reset() }
         .onChange(of: draft.secret) { tester.reset() }
+        // A sign-in method not used before has nothing filled in, which isn't a mistake to point out yet.
+        .onChange(of: draft.loginMethod) { editing.finishEdit(showingProblems: false) }
+        .onChange(of: model.config) { editing.followSavedServer() }
         .sheet(isPresented: $showBrowser) {
             VStack(spacing: 12) {
                 Text("Choose a folder").font(.headline)
@@ -224,8 +291,9 @@ private struct ConnectionSettings: View {
                     Spacer()
                     Button("Cancel") { showBrowser = false }
                     Button("Choose") {
-                        draft.remoteDirectory = RemotePath.normalizedDirectory(browsePath)
+                        editing.draft.remoteDirectory = RemotePath.normalizedDirectory(browsePath)
                         showBrowser = false
+                        editing.finishEdit()
                     }
                     .keyboardShortcut(.defaultAction)
                     .buttonStyle(.borderedProminent)
@@ -276,26 +344,8 @@ private struct ConnectionSettings: View {
         }
     }
 
-    private func load() {
-        if let config = model.config {
-            draft = ServerDraft(config: config, password: model.password(for: config))
-        } else {
-            draft = ServerDraft()
-        }
-        tester.reset()
-        saveError = nil
-    }
-
-    private func save() {
-        draft.showProblems = true
-        guard draft.isValid else { return }
-        do {
-            try model.save(draft.config, secret: draft.secret)
-            saveError = nil
-            close()
-        } catch {
-            saveError = "Couldn’t save: \(error.localizedDescription)"
-        }
+    private func finish() {
+        editing.finishEdit()
     }
 }
 
