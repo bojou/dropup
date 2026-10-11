@@ -62,7 +62,7 @@ private struct EditFinished: ViewModifier {
 struct KeyFileField: View {
     @Binding var path: String
     /// Runs after a file has been chosen.
-    var chosen: (() -> Void)?
+    var picked: (() -> Void)?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 5) {
@@ -108,7 +108,7 @@ struct KeyFileField: View {
         let chosen: (NSApplication.ModalResponse) -> Void = { response in
             if response == .OK, let url = panel.url {
                 path = url.path
-                chosen?()
+                picked?()
             }
         }
         if let window = NSApp.keyWindow {

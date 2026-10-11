@@ -224,7 +224,7 @@ private struct ConnectionSettings: View {
                         }
                     }
                     if draft.usesKey {
-                        KeyFileField(path: $editing.draft.keyFilePath, chosen: finish)
+                        KeyFileField(path: $editing.draft.keyFilePath, picked: finish)
                     }
                     VStack(alignment: .leading, spacing: 5) {
                         Text("Remote folder").font(.system(size: 12, weight: .medium)).foregroundStyle(.secondary)
